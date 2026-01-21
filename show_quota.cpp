@@ -472,7 +472,7 @@ void print_usage(const char* program_name) {
     std::cerr << "Usage: " << program_name << " [OPTIONS] [API_KEY]" << std::endl;
     std::cerr << std::endl;
     std::cerr << "Options:" << std::endl;
-    std::cerr << "  --refresh <seconds>  Refresh continuously every N seconds (default: 60)" << std::endl;
+    std::cerr << "  --refresh <seconds>  Refresh continuously every N seconds (default/min: 60)" << std::endl;
     std::cerr << "  -1                   Single run (no refresh loop)" << std::endl;
     std::cerr << "  --text              Pure text output (no progress bar)" << std::endl;
     std::cerr << "  --log <file>        Log quota changes to CSV file (default: ./show_quota.log)" << std::endl;
@@ -489,10 +489,10 @@ void print_usage(const char* program_name) {
     std::cerr << std::endl;
     std::cerr << "Examples:" << std::endl;
     std::cerr << "  " << program_name << " fw_api_xxx" << std::endl;
-    std::cerr << "  " << program_name << " --refresh 30 fw_api_xxx" << std::endl;
+    std::cerr << "  " << program_name << " --refresh 60 fw_api_xxx" << std::endl;
     std::cerr << "  " << program_name << " -1 fw_api_xxx" << std::endl;
     std::cerr << "  " << program_name << " --text --refresh 60 --log quota.csv" << std::endl;
-    std::cerr << "  " << program_name << " --no-log --refresh 10" << std::endl;
+    std::cerr << "  " << program_name << " --no-log --refresh 60" << std::endl;
     std::cerr << "  " << program_name << " --log /var/log/firmware_quota.csv" << std::endl;
 }
 
@@ -619,8 +619,8 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--refresh" || arg == "-r") {
             if (i + 1 < argc) {
                 refresh_interval = std::atoi(argv[++i]);
-                if (refresh_interval <= 0) {
-                    refresh_interval = 60; // Default to 60 seconds
+                if (refresh_interval < 60) {
+                    refresh_interval = 60; // Enforce minimum of 60 seconds
                 }
             } else {
                 refresh_interval = 60; // Default to 60 seconds
