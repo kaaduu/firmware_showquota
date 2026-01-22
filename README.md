@@ -134,15 +134,15 @@ If `wmctrl` is installed, the xterm will also be set to "always on top" (best-ef
   - The bar drains toward the reset time.
   - Colors shift as reset approaches (green -> yellow -> red).
 
-## Sneak peek (ANSI mode)
+## Sneak peek (TTY colored)
 
 Exact widths/colors depend on your terminal, but it looks like this:
 
 ```text
 Firmware API Quota Details:
 ==========================
-Usage: [\x1b[33m██████████████░░░░░░░░░░░░░░\x1b[0m] 63.20%
-Reset: [\x1b[31m████░░░░░░░░░░░░░░░░░░░░░░░\x1b[0m] 12m 08s left (of 5h)
+Usage: [██████████████░░░░░░░░░░░░░░] 63.20%
+Reset: [████░░░░░░░░░░░░░░░░░░░░░░░] 12m 08s left (of 5h)
 Resets at: 2026-01-21 18:05:00 CET
 
 Refreshing every 60 seconds (Ctrl+C to stop)...
@@ -153,15 +153,15 @@ Notes:
 - If stdout is not a TTY (piped to a file), colors are automatically disabled.
 - If your locale is UTF-8, the bars use block characters; otherwise they fall back to ASCII.
 
-### Compact mode example (ANSI)
+### Compact mode example
 
 ```text
-U:[\x1b[33m██████████░░░░░░\x1b[0m] 63%
-R:[\x1b[31m████░░░░░░░░░░░░\x1b[0m] 12m8s
+U:[██████████░░░░░░] 63%
+R:[████░░░░░░░░░░░░] 12m8s
 ```
 
-### Tiny mode example (ANSI)
+### Tiny mode example
 
 ```text
-\x1b[33m63%\x1b[0m
+63%
 ```
