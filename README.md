@@ -76,8 +76,23 @@ Common examples:
 # Pure text output (no progress bars)
 ./show_quota --text
 
-# Run inside a fixed-size xterm (80x8)
+# Compact bar layout for ~40-column terminals
+./show_quota --compact
+
+# Tiny single-line layout
+./show_quota --tiny
+
+# Run inside a fixed-size xterm (default 80x8)
 ./show_quota_xterm.sh
+
+# Compact xterm preset (80x3)
+./show_quota_xterm.sh --compact
+
+# Compact 40-column xterm preset (40x3)
+./show_quota_xterm.sh --compact-40
+
+# Tiny xterm preset (6x2, font size 20)
+./show_quota_xterm.sh --tiny
 ```
 
 ## Run in xterm (80x8)
@@ -88,10 +103,25 @@ If you want a consistent layout for screenshots or a tiny dashboard window, run 
 ./show_quota_xterm.sh
 ```
 
+By default the launcher uses a larger font for readability. You can override it:
+
+```bash
+SHOW_QUOTA_XTERM_FONT_FACE="DejaVu Sans Mono" SHOW_QUOTA_XTERM_FONT_SIZE=16 ./show_quota_xterm.sh
+```
+
 Pass any `show_quota` args through:
 
 ```bash
 ./show_quota_xterm.sh --refresh 60 --no-log
+
+# Compact preset (80x3)
+./show_quota_xterm.sh --compact
+
+# Compact 40-column preset (40x3)
+./show_quota_xterm.sh --compact-40
+
+# Tiny preset (6x2, font size 20)
+./show_quota_xterm.sh --tiny
 ```
 
 If `wmctrl` is installed, the xterm will also be set to "always on top" (best-effort; depends on your window manager).
@@ -122,3 +152,16 @@ Notes:
 
 - If stdout is not a TTY (piped to a file), colors are automatically disabled.
 - If your locale is UTF-8, the bars use block characters; otherwise they fall back to ASCII.
+
+### Compact mode example (ANSI)
+
+```text
+U:[\x1b[33m██████████░░░░░░\x1b[0m] 63%
+R:[\x1b[31m████░░░░░░░░░░░░\x1b[0m] 12m8s
+```
+
+### Tiny mode example (ANSI)
+
+```text
+\x1b[33m63%\x1b[0m
+```

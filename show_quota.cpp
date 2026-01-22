@@ -12,10 +12,50 @@
 #include <clocale>
 #include <fstream>
 #include <sys/stat.h>
+#include <optional>
+#include <cmath>
+#include <signal.h>
 
 using json = nlohmann::json;
 
 static constexpr int kQuotaWindowSeconds = 5 * 60 * 60;
+
+static volatile sig_atomic_t g_cursor_hidden = 0;
+
+static void cursor_hide_raw() {
+    static const char kHide[] = "\033[?25l";
+    (void)!write(STDOUT_FILENO, kHide, sizeof(kHide) - 1);
+}
+
+static void cursor_show_raw() {
+    static const char kShow[] = "\033[?25h";
+    (void)!write(STDOUT_FILENO, kShow, sizeof(kShow) - 1);
+}
+
+static void show_cursor_if_hidden() {
+    if (g_cursor_hidden) {
+        cursor_show_raw();
+        g_cursor_hidden = 0;
+    }
+}
+
+static void hide_cursor_if_tty() {
+    if (!isatty(STDOUT_FILENO)) {
+        return;
+    }
+    if (!g_cursor_hidden) {
+        cursor_hide_raw();
+        g_cursor_hidden = 1;
+    }
+}
+
+static void handle_term_signal(int sig) {
+    if (g_cursor_hidden) {
+        cursor_show_raw();
+        g_cursor_hidden = 0;
+    }
+    _exit(128 + sig);
+}
 
 // Structure to hold quota data
 struct QuotaData {
@@ -110,6 +150,31 @@ static std::string format_duration_compact(int64_t seconds) {
     return out.str();
 }
 
+static std::string format_duration_tight(int64_t seconds) {
+    if (seconds < 0) {
+        seconds = 0;
+    }
+
+    int64_t hours = seconds / 3600;
+    int64_t minutes = (seconds % 3600) / 60;
+    int64_t secs = seconds % 60;
+
+    std::ostringstream out;
+    if (hours > 99) {
+        return "99h+";
+    }
+    if (hours > 0) {
+        out << hours << "h" << minutes << "m";
+        return out.str();
+    }
+    if (minutes > 0) {
+        out << minutes << "m" << secs << "s";
+        return out.str();
+    }
+    out << secs << "s";
+    return out.str();
+}
+
 // Get ANSI color code based on usage percentage
 std::string get_color_for_percentage(double percentage, bool use_colors) {
     if (!use_colors) {
@@ -123,6 +188,20 @@ std::string get_color_for_percentage(double percentage, bool use_colors) {
     } else {
         return "\033[31m"; // Red
     }
+}
+
+static std::string get_color_for_percentage_tiny(double percentage, bool use_colors) {
+    if (!use_colors) {
+        return "";
+    }
+
+    // Tighter thresholds so "near 100%" trends red.
+    if (percentage < 70.0) {
+        return "\033[32m"; // Green
+    } else if (percentage < 90.0) {
+        return "\033[33m"; // Yellow
+    }
+    return "\033[31m"; // Red
 }
 
 // Render progress bar
@@ -170,6 +249,71 @@ std::string render_progress_bar(double percentage, int terminal_width, bool use_
     bar << std::fixed << std::setprecision(2) << percentage << "%";
     
     return bar.str();
+}
+
+static std::string truncate_right(const std::string& s, size_t max_len) {
+    if (s.size() <= max_len) {
+        return s;
+    }
+    return s.substr(0, max_len);
+}
+
+static std::string render_progress_bar_compact(double percentage, int terminal_width, bool use_colors) {
+    int pct_i = static_cast<int>(std::llround(percentage));
+    if (pct_i < 0) pct_i = 0;
+    if (pct_i > 100) pct_i = 100;
+
+    std::string suffix = std::to_string(pct_i) + "%";
+    const std::string label = "U:";
+
+    int label_len = static_cast<int>(label.size());
+    int suffix_len = static_cast<int>(suffix.size());
+    int bar_width = terminal_width - (label_len + suffix_len + 3);
+    if (bar_width < 1) {
+        bar_width = 1;
+        int max_suffix = terminal_width - (label_len + bar_width + 3);
+        if (max_suffix < 0) max_suffix = 0;
+        suffix = truncate_right(suffix, static_cast<size_t>(max_suffix));
+        suffix_len = static_cast<int>(suffix.size());
+    }
+
+    int filled = static_cast<int>((static_cast<double>(pct_i) / 100.0) * bar_width);
+    int empty = bar_width - filled;
+    if (filled < 0) filled = 0;
+    if (filled > bar_width) filled = bar_width;
+    if (empty < 0) empty = 0;
+
+    bool use_utf8 = is_utf8_locale();
+    std::string filled_char = use_utf8 ? "█" : "#";
+    std::string empty_char = use_utf8 ? "░" : "-";
+
+    std::string color = get_color_for_percentage(static_cast<double>(pct_i), use_colors);
+    std::string reset = use_colors ? "\033[0m" : "";
+
+    std::ostringstream bar;
+    bar << label << "[" << color;
+    for (int i = 0; i < filled; i++) {
+        bar << filled_char;
+    }
+    for (int i = 0; i < empty; i++) {
+        bar << empty_char;
+    }
+    bar << reset << "] ";
+    bar << suffix;
+    return bar.str();
+}
+
+static std::string render_tiny_usage_line(double percentage, bool use_colors) {
+    int pct_i = static_cast<int>(std::llround(percentage));
+    if (pct_i < 0) pct_i = 0;
+    if (pct_i > 100) pct_i = 100;
+
+    std::string color = get_color_for_percentage_tiny(static_cast<double>(pct_i), use_colors);
+    std::string reset = use_colors ? "\033[0m" : "";
+
+    std::ostringstream out;
+    out << color << pct_i << "%" << reset;
+    return out.str();
 }
 
 static std::string render_reset_time_bar(time_t reset_utc, int terminal_width, bool use_colors) {
@@ -231,20 +375,92 @@ static std::string render_reset_time_bar(time_t reset_utc, int terminal_width, b
     return bar.str();
 }
 
-// Function to make HTTP request with given auth header
-std::string make_request(const std::string& auth_header) {
-    CURL* curl;
-    CURLcode res;
-    std::string response;
-    
-    curl = curl_easy_init();
-    if (!curl) {
-        return "";
+static std::string render_reset_time_bar_compact(time_t reset_utc, int terminal_width, bool use_colors) {
+    time_t now = time(nullptr);
+    int64_t remaining_seconds = static_cast<int64_t>(difftime(reset_utc, now));
+    if (remaining_seconds < 0) {
+        remaining_seconds = 0;
     }
-    
-    struct curl_slist* headers = NULL;
+
+    const int64_t window_seconds = kQuotaWindowSeconds;
+
+    int64_t remaining_for_bar = remaining_seconds;
+    if (remaining_for_bar > window_seconds) {
+        remaining_for_bar = window_seconds;
+    }
+
+    double remaining_pct = window_seconds > 0 ? (static_cast<double>(remaining_for_bar) * 100.0 / static_cast<double>(window_seconds)) : 0.0;
+    if (remaining_pct < 0.0) remaining_pct = 0.0;
+    if (remaining_pct > 100.0) remaining_pct = 100.0;
+
+    double approaching_pct = 100.0 - remaining_pct;
+
+    std::string suffix = format_duration_tight(remaining_seconds);
+    const std::string label = "R:";
+
+    int label_len = static_cast<int>(label.size());
+    int suffix_len = static_cast<int>(suffix.size());
+    int bar_width = terminal_width - (label_len + suffix_len + 3);
+    if (bar_width < 1) {
+        bar_width = 1;
+        int max_suffix = terminal_width - (label_len + bar_width + 3);
+        if (max_suffix < 0) max_suffix = 0;
+        suffix = truncate_right(suffix, static_cast<size_t>(max_suffix));
+        suffix_len = static_cast<int>(suffix.size());
+    }
+
+    int filled = static_cast<int>((remaining_pct / 100.0) * bar_width);
+    int empty = bar_width - filled;
+    if (filled < 0) filled = 0;
+    if (filled > bar_width) filled = bar_width;
+    if (empty < 0) empty = 0;
+
+    bool use_utf8 = is_utf8_locale();
+    std::string filled_char = use_utf8 ? "█" : "#";
+    std::string empty_char = use_utf8 ? "░" : "-";
+
+    std::string color = get_color_for_percentage(approaching_pct, use_colors);
+    std::string reset = use_colors ? "\033[0m" : "";
+
+    std::ostringstream bar;
+    bar << label << "[" << color;
+    for (int i = 0; i < filled; i++) {
+        bar << filled_char;
+    }
+    for (int i = 0; i < empty; i++) {
+        bar << empty_char;
+    }
+    bar << reset << "] ";
+    bar << suffix;
+    return bar.str();
+}
+
+// Function to make HTTP request with given auth header
+struct RequestResult {
+    CURLcode curl_code = CURLE_OK;
+    long http_code = 0;
+    std::string body;
+    std::string curl_error;
+};
+
+static RequestResult make_request(const std::string& auth_header) {
+    RequestResult out;
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        out.curl_code = CURLE_FAILED_INIT;
+        out.curl_error = "curl_easy_init failed";
+        return out;
+    }
+
+    std::string response;
+
+    struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, auth_header.c_str());
-    
+
+    char errbuf[CURL_ERROR_SIZE];
+    errbuf[0] = '\0';
+
     curl_easy_setopt(curl, CURLOPT_URL, "https://app.firmware.ai/api/v1/quota");
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
@@ -252,17 +468,22 @@ std::string make_request(const std::string& auth_header) {
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-    
-    res = curl_easy_perform(curl);
-    
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
+
+    out.curl_code = curl_easy_perform(curl);
+    out.body = std::move(response);
+
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    out.http_code = http_code;
+    if (errbuf[0] != '\0') {
+        out.curl_error = errbuf;
+    }
+
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
-    
-    if (res != CURLE_OK) {
-        return "";
-    }
-    
-    return response;
+
+    return out;
 }
 
 // Check if response contains unauthorized error
@@ -280,34 +501,113 @@ std::string extract_token(const std::string& api_key) {
 }
 
 // Try different authentication methods
-std::string try_auth_methods(const std::string& api_key, const std::string& token) {
-    std::string response;
-    
-    // Method 1: Bearer with full key
-    response = make_request("Authorization: Bearer " + api_key);
-    if (!response.empty() && !is_unauthorized(response)) {
-        return response;
+enum class AuthMethod {
+    BearerFullKey,
+    BearerToken,
+    XApiKey,
+    AuthorizationRaw,
+};
+
+static std::string build_auth_header(AuthMethod method, const std::string& api_key, const std::string& token) {
+    switch (method) {
+        case AuthMethod::BearerFullKey:
+            return "Authorization: Bearer " + api_key;
+        case AuthMethod::BearerToken:
+            return "Authorization: Bearer " + token;
+        case AuthMethod::XApiKey:
+            return "X-API-Key: " + api_key;
+        case AuthMethod::AuthorizationRaw:
+            return "Authorization: " + api_key;
     }
-    
-    // Method 2: Bearer with extracted token
-    response = make_request("Authorization: Bearer " + token);
-    if (!response.empty() && !is_unauthorized(response)) {
-        return response;
+    return "Authorization: Bearer " + api_key;
+}
+
+static bool is_http_success(long code) {
+    return code >= 200 && code < 300;
+}
+
+static bool is_auth_failure(const RequestResult& r) {
+    if (r.http_code == 401) {
+        return true;
     }
-    
-    // Method 3: X-API-Key header
-    response = make_request("X-API-Key: " + api_key);
-    if (!response.empty() && !is_unauthorized(response)) {
-        return response;
+    return is_unauthorized(r.body);
+}
+
+static std::string truncate_for_display(const std::string& s, size_t max_len) {
+    if (s.size() <= max_len) {
+        return s;
     }
-    
-    // Method 4: Authorization without Bearer
-    response = make_request("Authorization: " + api_key);
-    if (!response.empty() && !is_unauthorized(response)) {
-        return response;
+    return s.substr(0, max_len) + "...";
+}
+
+static RequestResult try_auth_methods(const std::string& api_key,
+                                      const std::string& token,
+                                      std::optional<AuthMethod>& preferred_method,
+                                      std::optional<AuthMethod>* used_method_out) {
+    auto attempt = [&](AuthMethod m) -> RequestResult {
+        return make_request(build_auth_header(m, api_key, token));
+    };
+
+    const AuthMethod all_methods[] = {
+        AuthMethod::BearerFullKey,
+        AuthMethod::BearerToken,
+        AuthMethod::XApiKey,
+        AuthMethod::AuthorizationRaw,
+    };
+
+    auto check_success = [&](const RequestResult& r) {
+        if (r.curl_code != CURLE_OK) {
+            return false;
+        }
+        if (!is_http_success(r.http_code)) {
+            return false;
+        }
+        if (is_auth_failure(r)) {
+            return false;
+        }
+        return true;
+    };
+
+    RequestResult last;
+
+    // First try the cached method (if any).
+    if (preferred_method.has_value()) {
+        last = attempt(*preferred_method);
+        if (check_success(last)) {
+            if (used_method_out) {
+                *used_method_out = *preferred_method;
+            }
+            return last;
+        }
+
+        // If it wasn't an auth failure, don't spam other auth methods.
+        if (last.curl_code != CURLE_OK || (!is_auth_failure(last) && !is_http_success(last.http_code))) {
+            return last;
+        }
     }
-    
-    return response; // Return last response (will be unauthorized)
+
+    // Fall back through all auth methods.
+    for (AuthMethod m : all_methods) {
+        if (preferred_method.has_value() && m == *preferred_method) {
+            continue;
+        }
+
+        last = attempt(m);
+        if (check_success(last)) {
+            preferred_method = m;
+            if (used_method_out) {
+                *used_method_out = m;
+            }
+            return last;
+        }
+
+        // Stop early if the failure isn't auth-related.
+        if (last.curl_code != CURLE_OK || (!is_auth_failure(last) && !is_http_success(last.http_code))) {
+            break;
+        }
+    }
+
+    return last;
 }
 
 // Format ISO 8601 timestamp to readable format in local timezone
@@ -477,6 +777,8 @@ void print_usage(const char* program_name) {
     std::cerr << "  --text              Pure text output (no progress bar)" << std::endl;
     std::cerr << "  --log <file>        Log quota changes to CSV file (default: ./show_quota.log)" << std::endl;
     std::cerr << "  --no-log            Disable logging" << std::endl;
+    std::cerr << "  --compact           Compact bar layout for ~40-column terminals" << std::endl;
+    std::cerr << "  --tiny              Extra small single-line output: XX%" << std::endl;
     std::cerr << "  --help              Show this help message" << std::endl;
     std::cerr << std::endl;
     std::cerr << "API Key:" << std::endl;
@@ -494,36 +796,59 @@ void print_usage(const char* program_name) {
     std::cerr << "  " << program_name << " --text --refresh 60 --log quota.csv" << std::endl;
     std::cerr << "  " << program_name << " --no-log --refresh 60" << std::endl;
     std::cerr << "  " << program_name << " --log /var/log/firmware_quota.csv" << std::endl;
+    std::cerr << "  " << program_name << " --compact --refresh 60" << std::endl;
+    std::cerr << "  " << program_name << " --tiny --refresh 60" << std::endl;
 }
 
 // Fetch and display quota information
 int fetch_and_display_quota(const std::string& api_key, const std::string& token, 
-                             bool text_mode, bool use_colors, int terminal_width,
-                             const std::string& log_file) {
+                              bool text_mode, bool compact_mode, bool tiny_mode, bool use_colors, int terminal_width,
+                              const std::string& log_file,
+                              std::optional<AuthMethod>& preferred_auth_method,
+                              bool truncate_error_body) {
     // Try different auth methods
-    std::string response = try_auth_methods(api_key, token);
-    
-    // Check if we got an unauthorized response
-    if (response.empty() || is_unauthorized(response)) {
-        std::cerr << "Error: Unauthorized after trying all auth methods. Raw response:" << std::endl;
-        std::cerr << response << std::endl;
+    std::optional<AuthMethod> used_method;
+    RequestResult result = try_auth_methods(api_key, token, preferred_auth_method, &used_method);
+
+    if (result.curl_code != CURLE_OK) {
+        std::cerr << "Request failed: " << curl_easy_strerror(result.curl_code);
+        if (!result.curl_error.empty()) {
+            std::cerr << " (" << result.curl_error << ")";
+        }
+        std::cerr << std::endl;
+        return 1;
+    }
+
+    if (!is_http_success(result.http_code)) {
+        std::cerr << "HTTP error: " << result.http_code << std::endl;
+        if (!result.body.empty()) {
+            std::cerr << (truncate_error_body ? truncate_for_display(result.body, 300) : result.body) << std::endl;
+        }
+        return 1;
+    }
+
+    if (is_auth_failure(result)) {
+        std::cerr << "Error: Unauthorized after trying all auth methods." << std::endl;
+        if (!result.body.empty()) {
+            std::cerr << (truncate_error_body ? truncate_for_display(result.body, 300) : result.body) << std::endl;
+        }
         return 1;
     }
     
     // Parse JSON response
     json j;
     try {
-        j = json::parse(response);
+        j = json::parse(result.body);
     } catch (const json::parse_error& e) {
         std::cerr << "Failed to parse response. Raw response:" << std::endl;
-        std::cerr << response << std::endl;
+        std::cerr << (truncate_error_body ? truncate_for_display(result.body, 300) : result.body) << std::endl;
         return 1;
     }
     
     // Extract used and reset fields
     if (!j.contains("used") || j["used"].is_null()) {
         std::cerr << "Failed to parse response. Raw response:" << std::endl;
-        std::cerr << response << std::endl;
+        std::cerr << (truncate_error_body ? truncate_for_display(result.body, 300) : result.body) << std::endl;
         return 1;
     }
     
@@ -548,7 +873,7 @@ int fetch_and_display_quota(const std::string& api_key, const std::string& token
         write_log_entry(log_file, current_data, event);
         
         // Show event notification for important changes
-        if (event == "QUOTA_RESET" || event == "POSSIBLE_RESET") {
+        if (!compact_mode && !tiny_mode && (event == "QUOTA_RESET" || event == "POSSIBLE_RESET")) {
             if (use_colors) {
                 std::cout << "\033[33m"; // Yellow
             }
@@ -558,18 +883,34 @@ int fetch_and_display_quota(const std::string& api_key, const std::string& token
             }
         }
     }
+
+    if (tiny_mode) {
+        std::cout << render_tiny_usage_line(percentage, use_colors) << std::endl;
+        return 0;
+    }
     
     // Display results
-    std::cout << "Firmware API Quota Details:" << std::endl;
-    std::cout << "==========================" << std::endl;
+    if (!compact_mode) {
+        std::cout << "Firmware API Quota Details:" << std::endl;
+        std::cout << "==========================" << std::endl;
+    }
     
     if (text_mode) {
         // Pure text output
         std::cout << std::fixed << std::setprecision(2);
-        std::cout << "Used: " << percentage << "% (" << used << ")" << std::endl;
+        if (!compact_mode) {
+            std::cout << "Used: " << percentage << "% (" << used << ")" << std::endl;
+        } else {
+            std::cout << std::fixed << std::setprecision(0);
+            std::cout << "U: " << percentage << "%" << std::endl;
+        }
     } else {
         // Progress bar output
-        std::cout << render_progress_bar(percentage, terminal_width, use_colors) << std::endl;
+        if (compact_mode) {
+            std::cout << render_progress_bar_compact(percentage, terminal_width, use_colors) << std::endl;
+        } else {
+            std::cout << render_progress_bar(percentage, terminal_width, use_colors) << std::endl;
+        }
     }
 
     if (!reset.empty()) {
@@ -577,24 +918,42 @@ int fetch_and_display_quota(const std::string& api_key, const std::string& token
         bool parsed = parse_iso8601_utc_to_time_t(reset, &reset_utc);
         if (parsed) {
             if (!text_mode) {
-                std::cout << render_reset_time_bar(reset_utc, terminal_width, use_colors) << std::endl;
+                if (compact_mode) {
+                    std::cout << render_reset_time_bar_compact(reset_utc, terminal_width, use_colors) << std::endl;
+                } else {
+                    std::cout << render_reset_time_bar(reset_utc, terminal_width, use_colors) << std::endl;
+                }
             } else {
                 time_t now = time(nullptr);
                 int64_t remaining_seconds = static_cast<int64_t>(difftime(reset_utc, now));
                 if (remaining_seconds < 0) {
                     remaining_seconds = 0;
                 }
-                std::cout << "Reset in: " << format_duration_compact(remaining_seconds) << " (of 5h)" << std::endl;
+                if (!compact_mode) {
+                    std::cout << "Reset in: " << format_duration_compact(remaining_seconds) << " (of 5h)" << std::endl;
+                } else {
+                    std::cout << "R: " << format_duration_tight(remaining_seconds) << std::endl;
+                }
             }
 
             std::string reset_readable = format_timestamp(reset);
-            std::cout << "Resets at: " << reset_readable << std::endl;
+            if (!compact_mode) {
+                std::cout << "Resets at: " << reset_readable << std::endl;
+            }
         } else {
             std::string reset_readable = format_timestamp(reset);
-            std::cout << "Reset: " << reset_readable << std::endl;
+            if (!compact_mode) {
+                std::cout << "Reset: " << reset_readable << std::endl;
+            } else {
+                std::cout << "R: " << truncate_right(reset_readable, static_cast<size_t>(terminal_width)) << std::endl;
+            }
         }
     } else {
-        std::cout << "Reset: No active window (quota not used recently)" << std::endl;
+        if (!compact_mode) {
+            std::cout << "Reset: No active window (quota not used recently)" << std::endl;
+        } else {
+            std::cout << "R: none" << std::endl;
+        }
     }
     
     return 0;
@@ -604,6 +963,8 @@ int main(int argc, char* argv[]) {
     std::string api_key;
     int refresh_interval = 60;
     bool text_mode = false;
+    bool compact_mode = false;
+    bool tiny_mode = false;
     std::string log_file = "show_quota.log";
     bool logging_enabled = true;
     
@@ -627,6 +988,12 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--text" || arg == "-t") {
             text_mode = true;
+        } else if (arg == "--compact") {
+            compact_mode = true;
+            tiny_mode = false;
+        } else if (arg == "--tiny") {
+            tiny_mode = true;
+            compact_mode = false;
         } else if (arg == "--log" || arg == "-l") {
             if (i + 1 < argc) {
                 log_file = argv[++i];
@@ -646,6 +1013,17 @@ int main(int argc, char* argv[]) {
             print_usage(argv[0]);
             return 1;
         }
+    }
+
+    if (compact_mode || tiny_mode) {
+        std::atexit(show_cursor_if_hidden);
+        struct sigaction sa;
+        std::memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = handle_term_signal;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGINT, &sa, nullptr);
+        sigaction(SIGTERM, &sa, nullptr);
+        hide_cursor_if_tty();
     }
     
     // Get API key from environment variable if not provided
@@ -671,21 +1049,32 @@ int main(int argc, char* argv[]) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
     
     // Get terminal properties
-    int terminal_width = get_terminal_width();
-    bool use_colors = isatty(STDOUT_FILENO);
+    std::optional<AuthMethod> preferred_auth_method;
     
     int result = 0;
 
     if (refresh_interval > 0) {
         // Continuous refresh mode
         while (true) {
+            int terminal_width = get_terminal_width();
+            bool use_colors = isatty(STDOUT_FILENO);
+
             // Clear screen (ANSI escape code)
             if (use_colors) {
                 std::cout << "\033[2J\033[H"; // Clear screen and move cursor to home
                 std::cout.flush();
             }
             
-            result = fetch_and_display_quota(api_key, token, text_mode, use_colors, terminal_width, logging_enabled ? log_file : std::string());
+            result = fetch_and_display_quota(api_key,
+                                             token,
+                                             text_mode,
+                                             compact_mode,
+                                             tiny_mode,
+                                             use_colors,
+                                             terminal_width,
+                                             logging_enabled ? log_file : std::string(),
+                                             preferred_auth_method,
+                                             true);
             
             if (result != 0) {
                 // Error occurred, but continue trying
@@ -693,7 +1082,9 @@ int main(int argc, char* argv[]) {
             }
             
             // Show next refresh time
-            std::cout << std::endl << "Refreshing every " << refresh_interval << " seconds (Ctrl+C to stop)..." << std::endl;
+            if (!compact_mode && !tiny_mode) {
+                std::cout << std::endl << "Refreshing every " << refresh_interval << " seconds (Ctrl+C to stop)..." << std::endl;
+            }
             std::cout.flush();
             
             // Sleep for specified interval
@@ -701,7 +1092,18 @@ int main(int argc, char* argv[]) {
         }
     } else {
         // Single run mode
-        result = fetch_and_display_quota(api_key, token, text_mode, use_colors, terminal_width, logging_enabled ? log_file : std::string());
+        int terminal_width = get_terminal_width();
+        bool use_colors = isatty(STDOUT_FILENO);
+        result = fetch_and_display_quota(api_key,
+                                         token,
+                                         text_mode,
+                                         compact_mode,
+                                         tiny_mode,
+                                         use_colors,
+                                         terminal_width,
+                                         logging_enabled ? log_file : std::string(),
+                                         preferred_auth_method,
+                                         false);
     }
     
     // Cleanup curl
