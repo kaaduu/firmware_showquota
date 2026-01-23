@@ -19,7 +19,14 @@ endif
 
 all: $(TARGET)
 
-$(TARGET): $(SOURCE)
+# Generate PNG icon from SVG if inkscape is available (for better tray icon support)
+firmware-icon.png: firmware-icon.svg
+	@if command -v inkscape >/dev/null 2>&1; then \
+		echo "Generating PNG icon from SVG..."; \
+		inkscape firmware-icon.svg -o firmware-icon.png -w 48 -h 48 2>/dev/null || true; \
+	fi
+
+$(TARGET): $(SOURCE) firmware-icon.png
 	$(CXX) $(CXXFLAGS) -o $(TARGET) $(SOURCE) $(LDFLAGS)
 
 clean:

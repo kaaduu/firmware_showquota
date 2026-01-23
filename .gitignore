@@ -1,3 +1,4 @@
 show_quota
 *.log
 .firmware_quota_gui.conf
+firmware-icon.png
