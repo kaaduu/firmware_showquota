@@ -69,6 +69,8 @@ Then run:
 
 ## GUI Mode
 
+### Launching GUI Mode
+
 Launch the GUI with system tray support in different sizes:
 
 ```bash
@@ -82,9 +84,29 @@ Launch the GUI with system tray support in different sizes:
 ./show_quota --gui-tiny
 ```
 
+### GUI Command-Line Options
+
+All standard options work with GUI mode:
+
+```bash
+# GUI with custom refresh interval (default: 60 seconds)
+./show_quota --gui --refresh 120
+
+# GUI without logging
+./show_quota --gui --no-log
+
+# GUI with custom log file
+./show_quota --gui --log /var/log/quota.log
+
+# Compact GUI with 2-minute refresh
+./show_quota --gui-compact --refresh 120
+```
+
+**Note**: The `-1` (single run) option doesn't apply to GUI mode - the GUI runs continuously until you quit from the tray menu.
+
 ### GUI Presentation Modes
 
-The GUI supports three presentation modes, similar to terminal modes:
+The GUI supports seven presentation modes. Three can be launched directly from the command line, while all seven are accessible via the system tray menu:
 
 **Standard Mode** (`--gui`):
 - Window size: 400x250
@@ -124,38 +146,69 @@ The GUI supports three presentation modes, similar to terminal modes:
 - No reset countdown bar
 - Perfect for corner monitoring
 
-The selected mode is automatically saved and restored on restart. Use a mode flag to override the saved preference. All modes can be switched on-the-fly from the tray menu.
+**Gauge Mode** (tray menu only):
+- Window size: 280×280
+- Circular progress gauge
+- Large centered percentage display
+- Clean, modern radial design
+- Perfect for at-a-glance monitoring
+
+The selected mode is automatically saved and restored on restart. Use a mode flag to override the saved preference. All modes can be switched on-the-fly from the system tray right-click menu under "Window Style".
 
 ### GUI Features
 
-- **System Tray Icon**: Color-coded icon (green/yellow/red) based on quota usage
-  - Green: <50% usage
-  - Yellow: 50-80% usage
-  - Red: ≥80% usage
-- **Hover Tooltip**: Shows current percentage and time until reset
-- **Main Window**: Displays progress bars, percentages, and timestamps
-  - Click tray icon to show/hide window
-  - Window position is saved and restored on restart
-- **Desktop Notifications**: Alerts for quota resets and high usage events
-- **Right-Click Menu**:
-  - Show / Hide window
-  - **Window Style** submenu to switch between Standard, Compact, and Tiny modes on the fly
-  - Quit
-- **Mode Switching**: Change window size/style anytime from tray menu
-- **All terminal features**: Logging, event detection, auth methods still work
+- **System Tray Integration**:
+  - Custom Firmware logo icon displayed in system tray
+  - Persistent tray presence - application runs in background even when window is hidden
+  - Click tray icon to toggle window visibility
+  - Right-click for context menu with full controls
 
-### GUI Screenshots
+- **Color-Coded Visual Feedback**:
+  - Progress bars change color based on quota usage
+  - Green: <50% usage (healthy)
+  - Yellow: 50-80% usage (moderate)
+  - Red: ≥80% usage (high/critical)
 
-The main window displays:
-- Quota Usage progress bar with percentage
-- Reset Countdown progress bar with time remaining
-- Last updated timestamp
-- Reset timestamp
+- **Interactive Window**:
+  - Displays real-time progress bars for quota usage and reset countdown
+  - Shows percentages, timestamps, and time remaining
+  - Window position and size automatically saved between sessions
+  - Close button hides window to tray instead of quitting
 
-The system tray provides:
-- Quick access via panel icon
-- Tooltip with current status
-- Context menu for window management
+- **Desktop Notifications**:
+  - Automatic alerts for quota reset events
+  - High usage warnings when quota increases significantly
+  - Non-intrusive desktop notifications (10-second timeout)
+
+- **System Tray Context Menu**:
+  - **Show Window** / **Hide Window**: Toggle main window visibility
+  - **Window Style** submenu: Switch between all seven modes on-the-fly
+    - Standard (400×250), Compact (300×150), Bar (350×100)
+    - Mini (200×120), Wide (400×80), Tiny (150×50), Gauge (280×280)
+  - **Quit**: Exit application completely
+
+- **Hover Tooltip**: Live status display showing current percentage and time until reset
+
+- **All Terminal Features**: Full compatibility with logging, event detection, custom refresh intervals, and authentication methods
+
+### GUI Technical Details
+
+**Icon**: The application uses `firmware-icon.svg` for the system tray. The icon should be in the same directory as the executable, or in the system icon theme paths.
+
+**Configuration**: GUI state (window position, visibility, and selected mode) is automatically saved to `~/.firmware_quota_gui.conf` and restored on startup.
+
+**Threading**: Quota fetching runs in a background thread to keep the GUI responsive. Updates are displayed as soon as data is received.
+
+**Main Window Components**:
+- Quota Usage progress bar with percentage and exact value
+- Reset Countdown progress bar with time remaining (not shown in Tiny mode)
+- Timestamp labels showing last update and reset time (Standard mode only)
+- Color-coded bars that update dynamically based on thresholds
+
+**System Tray Components**:
+- Persistent tray icon for quick access
+- Live tooltip with current quota status
+- Context menu for full application control
 
 ## Usage
 
