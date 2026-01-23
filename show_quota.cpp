@@ -15,6 +15,10 @@
 #include <optional>
 #include <cmath>
 #include <signal.h>
+#include <libgen.h>
+#include <linux/limits.h>
+#include <map>
+#include <utility>
 
 #ifdef GUI_MODE_ENABLED
 extern "C" {
@@ -520,13 +524,8 @@ enum class AuthMethod {
 #ifdef GUI_MODE_ENABLED
 // GUI presentation modes
 enum class GUIMode {
-    Standard,   // Full window (400x250)
-    Compact,    // Compact window (300x150)
-    Tiny,       // Minimal window (150x50)
-    Bar,        // Horizontal bar (350x100) - thick bars
-    Mini,       // Small with chunky bars (200x120)
-    Wide,       // Ultra-wide thin (400x80) - large bars
-    Gauge       // Circular gauge (280x280) - radial progress
+    Tiny,       // Minimal fixed window (150x50)
+    Resizable   // Tiny-style but resizable horizontally
 };
 
 // Structure to hold GUI state (defined here after AuthMethod)
@@ -538,11 +537,20 @@ struct GUIState {
     GtkWidget* usage_label;
     GtkWidget* reset_label;
     GtkWidget* timestamp_label;
-    GtkWidget* gauge_drawing_area;  // For circular gauge mode
+    GtkWidget* gauge_drawing_area;
 
     // System Tray
     AppIndicator* indicator;
     GtkWidget* tray_menu;
+    GtkWidget* refresh_15_item;
+    GtkWidget* refresh_30_item;
+    GtkWidget* refresh_60_item;
+    GtkWidget* refresh_120_item;
+    GtkWidget* autostart_item;
+    GtkWidget* barwidth_1x_item;
+    GtkWidget* barwidth_2x_item;
+    GtkWidget* barwidth_3x_item;
+    GtkWidget* barwidth_4x_item;
 
     // Application State
     std::string api_key;
@@ -550,6 +558,7 @@ struct GUIState {
     std::string log_file;
     bool logging_enabled;
     int refresh_interval;
+    int bar_height_multiplier;  // Progress bar height multiplier (1x, 2x, 3x, 4x)
     std::optional<AuthMethod> preferred_auth_method;
 
     // Current Data
@@ -563,15 +572,32 @@ struct GUIState {
     int window_x;
     int window_y;
     bool window_visible;
+    bool always_on_top;
     GUIMode gui_mode;
+
+    // Restore state (needed because some WMs emit an initial configure-event at
+    // 0,0 while mapping, which would otherwise clobber the saved position).
+    int restore_x;
+    int restore_y;
+    bool have_restore_pos;
+    bool restoring;
+
+    // Per-mode position memory
+    std::map<GUIMode, std::pair<int, int>> mode_positions;
 
     // Constructor with defaults
     GUIState() : window(nullptr), usage_progress(nullptr), reset_progress(nullptr),
                  usage_label(nullptr), reset_label(nullptr), timestamp_label(nullptr),
                  gauge_drawing_area(nullptr), indicator(nullptr), tray_menu(nullptr),
-                 logging_enabled(true), refresh_interval(60),
+                 refresh_15_item(nullptr), refresh_30_item(nullptr),
+                 refresh_60_item(nullptr), refresh_120_item(nullptr),
+                 autostart_item(nullptr),
+                 barwidth_1x_item(nullptr), barwidth_2x_item(nullptr),
+                 barwidth_3x_item(nullptr), barwidth_4x_item(nullptr),
+                 logging_enabled(true), refresh_interval(15), bar_height_multiplier(1),
                  timer_id(0), window_x(-1), window_y(-1), window_visible(true),
-                 gui_mode(GUIMode::Standard) {
+                 always_on_top(false), gui_mode(GUIMode::Tiny),
+                 restore_x(-1), restore_y(-1), have_restore_pos(false), restoring(false) {
         current_quota.used = 0.0;
         current_quota.percentage = 0.0;
         current_quota.reset_time = "";
@@ -851,10 +877,10 @@ void print_usage(const char* program_name) {
     std::cerr << "Usage: " << program_name << " [OPTIONS] [API_KEY]" << std::endl;
     std::cerr << std::endl;
     std::cerr << "Options:" << std::endl;
-    std::cerr << "  --gui, -g            Launch GUI mode with system tray icon (standard size)" << std::endl;
-    std::cerr << "  --gui-compact        Launch GUI in compact mode (300x150 window)" << std::endl;
-    std::cerr << "  --gui-tiny           Launch GUI in tiny mode (150x80 window)" << std::endl;
-    std::cerr << "  --refresh <seconds>  Refresh continuously every N seconds (default/min: 60)" << std::endl;
+    std::cerr << "  --gui, -g            Launch GUI mode (Tiny style)" << std::endl;
+    std::cerr << "  --gui-tiny           Launch GUI in tiny mode (fixed 150x50 window)" << std::endl;
+    std::cerr << "  --gui-resizable      Launch GUI in resizable mode (Tiny style, resizable width)" << std::endl;
+    std::cerr << "  --refresh <seconds>  Refresh continuously every N seconds (default: 15)" << std::endl;
     std::cerr << "  -1                   Single run (no refresh loop)" << std::endl;
     std::cerr << "  --text              Pure text output (no progress bar)" << std::endl;
     std::cerr << "  --log <file>        Log quota changes to CSV file (default: ./show_quota.log)" << std::endl;
@@ -873,8 +899,8 @@ void print_usage(const char* program_name) {
     std::cerr << std::endl;
     std::cerr << "Examples:" << std::endl;
     std::cerr << "  " << program_name << " --gui fw_api_xxx" << std::endl;
-    std::cerr << "  " << program_name << " --gui-compact fw_api_xxx" << std::endl;
     std::cerr << "  " << program_name << " --gui-tiny fw_api_xxx" << std::endl;
+    std::cerr << "  " << program_name << " --gui-resizable fw_api_xxx" << std::endl;
     std::cerr << "  " << program_name << " fw_api_xxx" << std::endl;
     std::cerr << "  " << program_name << " --refresh 60 fw_api_xxx" << std::endl;
     std::cerr << "  " << program_name << " -1 fw_api_xxx" << std::endl;
@@ -1046,7 +1072,7 @@ int fetch_and_display_quota(const std::string& api_key, const std::string& token
 
 int main(int argc, char* argv[]) {
     std::string api_key;
-    int refresh_interval = 60;
+    int refresh_interval = 15;
     bool text_mode = false;
     bool compact_mode = false;
     bool tiny_mode = false;
@@ -1054,7 +1080,7 @@ int main(int argc, char* argv[]) {
     std::string log_file = "show_quota.log";
     bool logging_enabled = true;
 #ifdef GUI_MODE_ENABLED
-    GUIMode selected_gui_mode = GUIMode::Standard;
+    GUIMode selected_gui_mode = GUIMode::Tiny;
 #endif
 
     // Parse command-line arguments
@@ -1067,12 +1093,12 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--gui" || arg == "-g") {
             gui_mode = true;
 #ifdef GUI_MODE_ENABLED
-            selected_gui_mode = GUIMode::Standard;
+            selected_gui_mode = GUIMode::Tiny;
 #endif
-        } else if (arg == "--gui-compact") {
+        } else if (arg == "--gui-resizable") {
             gui_mode = true;
 #ifdef GUI_MODE_ENABLED
-            selected_gui_mode = GUIMode::Compact;
+            selected_gui_mode = GUIMode::Resizable;
 #endif
         } else if (arg == "--gui-tiny") {
             gui_mode = true;
@@ -1084,11 +1110,8 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--refresh" || arg == "-r") {
             if (i + 1 < argc) {
                 refresh_interval = std::atoi(argv[++i]);
-                if (refresh_interval < 60) {
-                    refresh_interval = 60; // Enforce minimum of 60 seconds
-                }
             } else {
-                refresh_interval = 60; // Default to 60 seconds
+                refresh_interval = 15; // Default to 15 seconds
             }
         } else if (arg == "--text" || arg == "-t") {
             text_mode = true;
@@ -1243,6 +1266,18 @@ static void update_tray_display(GUIState* state, const QuotaData* data);
 static void show_desktop_notification(const std::string& event, double percentage);
 static void save_gui_state(const GUIState* state);
 static gboolean on_timer_update(gpointer user_data);
+static void on_mode_resizable(GtkMenuItem* item, gpointer user_data);
+static void on_tray_reset_position(GtkMenuItem* item, gpointer user_data);
+static gboolean on_window_map(GtkWidget* widget, GdkEvent* event, gpointer user_data);
+static void on_toggle_autostart(GtkCheckMenuItem* item, gpointer user_data);
+
+static bool get_primary_monitor_workarea(GdkRectangle* out_workarea);
+static void move_window_to_primary_monitor(GUIState* state);
+
+static std::string get_executable_path();
+static std::string get_autostart_desktop_path();
+static bool is_autostart_enabled();
+static bool set_autostart_enabled(bool enabled);
 
 // Apply CSS styling for color-coded progress bars
 static void apply_css_styling() {
@@ -1302,8 +1337,73 @@ static gboolean on_window_delete(GtkWidget* widget, GdkEvent* event, gpointer us
 static gboolean on_window_configure(GtkWidget* widget, GdkEventConfigure* event, gpointer user_data) {
     (void)widget;
     GUIState* state = (GUIState*)user_data;
+    if (state->restoring) {
+        return FALSE;
+    }
     state->window_x = event->x;
     state->window_y = event->y;
+    return FALSE;
+}
+
+struct MoveWindowData {
+    GUIState* state;
+    int x;
+    int y;
+};
+
+static gboolean move_window_to_saved_position_idle(gpointer user_data) {
+    MoveWindowData* d = (MoveWindowData*)user_data;
+    if (!d || !d->state || !d->state->window) {
+        delete d;
+        return G_SOURCE_REMOVE;
+    }
+
+    gtk_window_move(GTK_WINDOW(d->state->window), d->x, d->y);
+
+    // Validate against current monitor layout using a point inside the window.
+    GdkDisplay* display = gdk_display_get_default();
+    if (display) {
+        int w = 0;
+        int h = 0;
+        gtk_window_get_size(GTK_WINDOW(d->state->window), &w, &h);
+        const int cx = d->x + (w / 2);
+        const int cy = d->y + (h / 2);
+        GdkMonitor* m = gdk_display_get_monitor_at_point(display, cx, cy);
+        if (!m) {
+            move_window_to_primary_monitor(d->state);
+            d->state->restoring = false;
+            save_gui_state(d->state);
+            delete d;
+            return G_SOURCE_REMOVE;
+        }
+    }
+
+    d->state->window_x = d->x;
+    d->state->window_y = d->y;
+    d->state->mode_positions[d->state->gui_mode] = std::make_pair(d->x, d->y);
+    d->state->restoring = false;
+
+    delete d;
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean on_window_map(GtkWidget* widget, GdkEvent* event, gpointer user_data) {
+    (void)widget;
+    (void)event;
+    GUIState* state = (GUIState*)user_data;
+    if (!state || !state->window) return FALSE;
+
+    if (!state->have_restore_pos) {
+        return FALSE;
+    }
+
+    // On Marco (MATE) the WM may ignore pre-map gtk_window_move(). Apply the
+    // saved position in an idle callback after the map.
+    MoveWindowData* d = new MoveWindowData();
+    d->state = state;
+    d->x = state->restore_x;
+    d->y = state->restore_y;
+    g_idle_add(move_window_to_saved_position_idle, d);
     return FALSE;
 }
 
@@ -1324,8 +1424,142 @@ static void on_tray_hide(GtkMenuItem* item, gpointer user_data) {
 
 static void on_tray_quit(GtkMenuItem* item, gpointer user_data) {
     (void)item;
-    (void)user_data;
+    // Best-effort persist latest position/mode before exit.
+    save_gui_state((GUIState*)user_data);
     gtk_main_quit();
+}
+
+static bool get_primary_monitor_workarea(GdkRectangle* out_workarea) {
+    if (!out_workarea) return false;
+    std::memset(out_workarea, 0, sizeof(*out_workarea));
+
+    GdkDisplay* display = gdk_display_get_default();
+    if (!display) return false;
+
+    GdkMonitor* monitor = gdk_display_get_primary_monitor(display);
+    if (!monitor) {
+        monitor = gdk_display_get_monitor(display, 0);
+    }
+    if (!monitor) return false;
+
+    gdk_monitor_get_workarea(monitor, out_workarea);
+    return out_workarea->width > 0 && out_workarea->height > 0;
+}
+
+static std::string get_executable_path() {
+    char buf[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (len <= 0) {
+        return "show_quota";
+    }
+    buf[len] = '\0';
+    return std::string(buf);
+}
+
+static std::string get_autostart_desktop_path() {
+    const char* home = getenv("HOME");
+    if (!home) return std::string();
+    return std::string(home) + "/.config/autostart/show_quota.desktop";
+}
+
+static bool is_autostart_enabled() {
+    std::string path = get_autostart_desktop_path();
+    if (path.empty()) return false;
+
+    std::ifstream f(path);
+    if (!f.is_open()) return false;
+
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.rfind("X-GNOME-Autostart-enabled=", 0) == 0) {
+            std::string v = line.substr(std::strlen("X-GNOME-Autostart-enabled="));
+            return (v == "true" || v == "True" || v == "1");
+        }
+    }
+
+    // If the file exists but the key is missing, treat as enabled.
+    return true;
+}
+
+static bool ensure_autostart_dir_exists() {
+    const char* home = getenv("HOME");
+    if (!home) return false;
+    std::string dir = std::string(home) + "/.config/autostart";
+
+    struct stat st;
+    if (stat(dir.c_str(), &st) == 0) {
+        return S_ISDIR(st.st_mode);
+    }
+
+    if (mkdir(dir.c_str(), 0755) != 0) {
+        return false;
+    }
+    return true;
+}
+
+static bool set_autostart_enabled(bool enabled) {
+    std::string path = get_autostart_desktop_path();
+    if (path.empty()) return false;
+    if (!ensure_autostart_dir_exists()) return false;
+
+    std::string exec_path = get_executable_path();
+
+    // Always write a small deterministic .desktop file.
+    std::ofstream f(path);
+    if (!f.is_open()) return false;
+
+    f << "[Desktop Entry]\n";
+    f << "Type=Application\n";
+    f << "Name=show_quota\n";
+    f << "Exec=" << exec_path << " --gui-tiny\n";
+    f << "Terminal=false\n";
+    f << "X-GNOME-Autostart-enabled=" << (enabled ? "true" : "false") << "\n";
+    f.close();
+    return true;
+}
+
+static void on_toggle_autostart(GtkCheckMenuItem* item, gpointer user_data) {
+    GUIState* state = (GUIState*)user_data;
+    if (!state) return;
+    const bool enabled = gtk_check_menu_item_get_active(item);
+
+    // Best-effort: if it fails, revert the checkbox.
+    if (!set_autostart_enabled(enabled)) {
+        g_signal_handlers_block_by_func(item, (void*)on_toggle_autostart, state);
+        gtk_check_menu_item_set_active(item, !enabled);
+        g_signal_handlers_unblock_by_func(item, (void*)on_toggle_autostart, state);
+    }
+}
+
+static void move_window_to_primary_monitor(GUIState* state) {
+    if (!state || !state->window) return;
+
+    GdkRectangle wa;
+    if (!get_primary_monitor_workarea(&wa)) {
+        // Fallback: let WM place it.
+        gtk_window_present(GTK_WINDOW(state->window));
+        return;
+    }
+
+    const int x = wa.x + 20;
+    const int y = wa.y + 20;
+    gtk_window_move(GTK_WINDOW(state->window), x, y);
+
+    state->window_x = x;
+    state->window_y = y;
+    state->mode_positions[state->gui_mode] = std::make_pair(x, y);
+}
+
+static void on_tray_reset_position(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    GUIState* state = (GUIState*)user_data;
+    if (!state || !state->window) return;
+
+    state->window_visible = true;
+    gtk_widget_show_all(state->window);
+    move_window_to_primary_monitor(state);
+    gtk_window_present(GTK_WINDOW(state->window));
+    save_gui_state(state);
 }
 
 // Recreate window with new GUI mode
@@ -1337,8 +1571,15 @@ static void recreate_window_with_mode(GUIState* state, GUIMode new_mode) {
     // Store current visibility
     bool was_visible = state->window_visible;
 
-    // Destroy old window
+    // Save current position (global across styles)
     if (state->window) {
+        int current_x, current_y;
+        gtk_window_get_position(GTK_WINDOW(state->window), &current_x, &current_y);
+        state->window_x = current_x;
+        state->window_y = current_y;
+        state->mode_positions[state->gui_mode] = std::make_pair(current_x, current_y);
+
+        // Destroy old window
         gtk_widget_destroy(state->window);
     }
 
@@ -1347,6 +1588,17 @@ static void recreate_window_with_mode(GUIState* state, GUIMode new_mode) {
 
     // Create new window with new mode
     state->window = create_main_window(state);
+
+    // Always restore last known position regardless of style.
+    state->have_restore_pos = (state->window_x != -1 && state->window_y != -1);
+    state->restore_x = state->window_x;
+    state->restore_y = state->window_y;
+    state->restoring = state->have_restore_pos;
+
+    // Apply always on top setting
+    if (state->always_on_top) {
+        gtk_window_set_keep_above(GTK_WINDOW(state->window), TRUE);
+    }
 
     // Restore visibility
     if (was_visible) {
@@ -1367,98 +1619,182 @@ static void recreate_window_with_mode(GUIState* state, GUIMode new_mode) {
 }
 
 // Mode change callbacks
-static void on_mode_standard(GtkMenuItem* item, gpointer user_data) {
-    (void)item;
-    GUIState* state = (GUIState*)user_data;
-    recreate_window_with_mode(state, GUIMode::Standard);
-}
-
-static void on_mode_compact(GtkMenuItem* item, gpointer user_data) {
-    (void)item;
-    GUIState* state = (GUIState*)user_data;
-    recreate_window_with_mode(state, GUIMode::Compact);
-}
-
 static void on_mode_tiny(GtkMenuItem* item, gpointer user_data) {
     (void)item;
     GUIState* state = (GUIState*)user_data;
     recreate_window_with_mode(state, GUIMode::Tiny);
 }
 
-static void on_mode_bar(GtkMenuItem* item, gpointer user_data) {
+static void on_mode_resizable(GtkMenuItem* item, gpointer user_data) {
     (void)item;
     GUIState* state = (GUIState*)user_data;
-    recreate_window_with_mode(state, GUIMode::Bar);
+    recreate_window_with_mode(state, GUIMode::Resizable);
 }
 
-static void on_mode_mini(GtkMenuItem* item, gpointer user_data) {
-    (void)item;
-    GUIState* state = (GUIState*)user_data;
-    recreate_window_with_mode(state, GUIMode::Mini);
-}
+// Refresh rate change callbacks
+static void change_refresh_rate(GUIState* state, int new_interval) {
+    state->refresh_interval = new_interval;
 
-static void on_mode_wide(GtkMenuItem* item, gpointer user_data) {
-    (void)item;
-    GUIState* state = (GUIState*)user_data;
-    recreate_window_with_mode(state, GUIMode::Wide);
-}
+    // Update checkmarks on menu items
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_15_item), new_interval == 15);
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_30_item), new_interval == 30);
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_60_item), new_interval == 60);
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_120_item), new_interval == 120);
 
-static void on_mode_gauge(GtkMenuItem* item, gpointer user_data) {
-    (void)item;
-    GUIState* state = (GUIState*)user_data;
-    recreate_window_with_mode(state, GUIMode::Gauge);
-}
-
-// Cairo drawing callback for circular gauge
-static gboolean on_gauge_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
-    GUIState* state = (GUIState*)user_data;
-
-    int width = gtk_widget_get_allocated_width(widget);
-    int height = gtk_widget_get_allocated_height(widget);
-    double center_x = width / 2.0;
-    double center_y = height / 2.0;
-    double radius = (width < height ? width : height) / 2.0 - 20;
-
-    double percentage = state->current_quota.percentage;
-
-    // Background circle
-    cairo_set_source_rgb(cr, 0.9, 0.9, 0.9);
-    cairo_set_line_width(cr, 20);
-    cairo_arc(cr, center_x, center_y, radius, 0, 2 * M_PI);
-    cairo_stroke(cr);
-
-    // Foreground arc (progress)
-    double angle = (percentage / 100.0) * 2 * M_PI;
-
-    // Color based on percentage
-    if (percentage < 50.0) {
-        cairo_set_source_rgb(cr, 0.30, 0.69, 0.31);  // Green
-    } else if (percentage < 80.0) {
-        cairo_set_source_rgb(cr, 1.0, 0.60, 0.0);    // Orange
-    } else {
-        cairo_set_source_rgb(cr, 0.96, 0.28, 0.21);  // Red
+    // Remove old timer
+    if (state->timer_id > 0) {
+        g_source_remove(state->timer_id);
     }
 
-    cairo_set_line_width(cr, 20);
-    cairo_arc(cr, center_x, center_y, radius, -M_PI/2, -M_PI/2 + angle);
-    cairo_stroke(cr);
+    // Create new timer with new interval
+    state->timer_id = g_timeout_add(
+        new_interval * 1000,
+        on_timer_update,
+        state
+    );
 
-    // Draw percentage text in center
-    char text[32];
-    snprintf(text, sizeof(text), "%.1f%%", percentage);
+    // Save preference
+    save_gui_state(state);
 
-    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
-    cairo_set_font_size(cr, 36);
+    // Trigger immediate update
+    on_timer_update(state);
+}
 
-    cairo_text_extents_t extents;
-    cairo_text_extents(cr, text, &extents);
+static void on_refresh_15s(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    change_refresh_rate((GUIState*)user_data, 15);
+}
 
-    cairo_set_source_rgb(cr, 0.2, 0.2, 0.2);
-    cairo_move_to(cr, center_x - extents.width/2 - extents.x_bearing,
-                     center_y - extents.height/2 - extents.y_bearing);
-    cairo_show_text(cr, text);
+static void on_refresh_30s(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    change_refresh_rate((GUIState*)user_data, 30);
+}
 
-    return FALSE;
+static void on_refresh_60s(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    change_refresh_rate((GUIState*)user_data, 60);
+}
+
+static void on_refresh_120s(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    change_refresh_rate((GUIState*)user_data, 120);
+}
+
+// Forward declarations for bar width callbacks
+static void on_barwidth_1x(GtkMenuItem* item, gpointer user_data);
+static void on_barwidth_2x(GtkMenuItem* item, gpointer user_data);
+static void on_barwidth_3x(GtkMenuItem* item, gpointer user_data);
+static void on_barwidth_4x(GtkMenuItem* item, gpointer user_data);
+
+// Progress bar height change callbacks
+static void change_bar_height(GUIState* state, int multiplier) {
+    state->bar_height_multiplier = multiplier;
+
+    // Block signals to prevent recursive callbacks
+    g_signal_handlers_block_by_func(state->barwidth_1x_item, (void*)on_barwidth_1x, state);
+    g_signal_handlers_block_by_func(state->barwidth_2x_item, (void*)on_barwidth_2x, state);
+    g_signal_handlers_block_by_func(state->barwidth_3x_item, (void*)on_barwidth_3x, state);
+    g_signal_handlers_block_by_func(state->barwidth_4x_item, (void*)on_barwidth_4x, state);
+
+    // Update checkmarks on menu items
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->barwidth_1x_item), multiplier == 1);
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->barwidth_2x_item), multiplier == 2);
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->barwidth_3x_item), multiplier == 3);
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->barwidth_4x_item), multiplier == 4);
+
+    // Unblock signals
+    g_signal_handlers_unblock_by_func(state->barwidth_1x_item, (void*)on_barwidth_1x, state);
+    g_signal_handlers_unblock_by_func(state->barwidth_2x_item, (void*)on_barwidth_2x, state);
+    g_signal_handlers_unblock_by_func(state->barwidth_3x_item, (void*)on_barwidth_3x, state);
+    g_signal_handlers_unblock_by_func(state->barwidth_4x_item, (void*)on_barwidth_4x, state);
+
+    // Recreate window so the new CSS min-height is picked up reliably.
+    // Preserve the exact window position and visibility.
+    GUIMode current_mode = state->gui_mode;
+    bool was_visible = state->window_visible;
+
+    int current_x = state->window_x;
+    int current_y = state->window_y;
+    if (state->window) {
+        gtk_window_get_position(GTK_WINDOW(state->window), &current_x, &current_y);
+        state->mode_positions[state->gui_mode] = std::make_pair(current_x, current_y);
+        state->window_x = current_x;
+        state->window_y = current_y;
+        gtk_widget_destroy(state->window);
+        state->window = nullptr;
+    }
+
+    state->window = create_main_window(state);
+
+    if (current_x >= 0 && current_y >= 0) {
+        gtk_window_move(GTK_WINDOW(state->window), current_x, current_y);
+    } else if (state->mode_positions.find(current_mode) != state->mode_positions.end()) {
+        auto pos = state->mode_positions[current_mode];
+        gtk_window_move(GTK_WINDOW(state->window), pos.first, pos.second);
+    }
+
+    if (state->always_on_top) {
+        gtk_window_set_keep_above(GTK_WINDOW(state->window), TRUE);
+    }
+
+    if (was_visible) {
+        gtk_widget_show_all(state->window);
+        state->window_visible = true;
+        // Some WMs ignore pre-map moves; apply again after show.
+        if (current_x >= 0 && current_y >= 0) {
+            gtk_window_move(GTK_WINDOW(state->window), current_x, current_y);
+        }
+        gtk_window_present(GTK_WINDOW(state->window));
+    } else {
+        gtk_widget_realize(state->window);
+        state->window_visible = false;
+        if (current_x >= 0 && current_y >= 0) {
+            gtk_window_move(GTK_WINDOW(state->window), current_x, current_y);
+        }
+    }
+
+    // Update with current data
+    if (state->current_quota.timestamp > 0) {
+        update_gui_widgets(state, &state->current_quota);
+        update_tray_display(state, &state->current_quota);
+    }
+
+    // Save preference
+    save_gui_state(state);
+}
+
+static void on_barwidth_1x(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    change_bar_height((GUIState*)user_data, 1);
+}
+
+static void on_barwidth_2x(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    change_bar_height((GUIState*)user_data, 2);
+}
+
+static void on_barwidth_3x(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    change_bar_height((GUIState*)user_data, 3);
+}
+
+static void on_barwidth_4x(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    change_bar_height((GUIState*)user_data, 4);
+}
+
+// Always on top toggle callback
+static void on_toggle_always_on_top(GtkCheckMenuItem* item, gpointer user_data) {
+    GUIState* state = (GUIState*)user_data;
+    state->always_on_top = gtk_check_menu_item_get_active(item);
+
+    // Apply to current window
+    if (state->window) {
+        gtk_window_set_keep_above(GTK_WINDOW(state->window), state->always_on_top);
+    }
+
+    // Save preference
+    save_gui_state(state);
 }
 
 // Create main window with widgets based on GUI mode
@@ -1467,11 +1803,13 @@ static GtkWidget* create_main_window(GUIState* state) {
     GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
 
     // Configure window based on mode
-    int width, height, border, spacing, bar_height;
+    int width, height, border, spacing, bar_height, bar_width;
     const char* title;
     bool show_frames = true;
     bool show_timestamp = true;
-    bool show_reset = true;
+
+    bool allow_resize = false;
+    bool width_follows_window = false;
 
     switch (state->gui_mode) {
         case GUIMode::Tiny:
@@ -1479,78 +1817,47 @@ static GtkWidget* create_main_window(GUIState* state) {
             height = 50;
             border = 5;
             spacing = 3;
-            bar_height = 15;
-            title = "Quota";
-            show_frames = false;
-            show_timestamp = false;
-            show_reset = false;  // Tiny mode: only usage bar
-            break;
-        case GUIMode::Bar:
-            width = 350;
-            height = 100;
-            border = 8;
-            spacing = 5;
-            bar_height = 30;  // Thick bars!
+            bar_height = 10 * state->bar_height_multiplier;
+            bar_width = width;
             title = "Quota";
             show_frames = false;
             show_timestamp = false;
             break;
-        case GUIMode::Mini:
-            width = 200;
-            height = 120;
-            border = 6;
-            spacing = 4;
-            bar_height = 25;  // Chunky bars
+        case GUIMode::Resizable:
+            width = 220;
+            height = 50;
+            border = 5;
+            spacing = 3;
+            bar_height = 10 * state->bar_height_multiplier;
+            bar_width = -1;
             title = "Quota";
             show_frames = false;
             show_timestamp = false;
+            allow_resize = true;
+            width_follows_window = true;
             break;
-        case GUIMode::Wide:
-            width = 400;
-            height = 80;
-            border = 6;
-            spacing = 4;
-            bar_height = 28;  // Large bars in wide format
-            title = "Firmware Quota";
-            show_frames = false;
-            show_timestamp = false;
-            break;
-        case GUIMode::Gauge:
-            width = 280;
-            height = 280;
-            border = 10;
-            spacing = 5;
-            bar_height = 0;  // No bars, using circular gauge
-            title = "Quota";
-            show_frames = false;
-            show_timestamp = false;
-            show_reset = false;  // Circular gauge shows only usage
-            break;
-        case GUIMode::Compact:
-            width = 300;
-            height = 150;
-            border = 8;
-            spacing = 5;
-            bar_height = 20;
-            title = "Firmware Quota";
-            show_frames = false;
-            show_timestamp = false;
-            break;
-        case GUIMode::Standard:
         default:
-            width = 400;
-            height = 250;
-            border = 10;
-            spacing = 10;
-            bar_height = 30;
-            title = "Firmware API Quota Monitor";
+            width = 150;
+            height = 50;
+            border = 5;
+            spacing = 3;
+            bar_height = 10 * state->bar_height_multiplier;
+            bar_width = width;
+            title = "Quota";
+            show_frames = false;
+            show_timestamp = false;
             break;
     }
 
     gtk_window_set_title(GTK_WINDOW(window), title);
     gtk_window_set_default_size(GTK_WINDOW(window), width, height);
-    gtk_window_set_resizable(GTK_WINDOW(window), FALSE);
+    gtk_window_set_resizable(GTK_WINDOW(window), allow_resize ? TRUE : FALSE);
     gtk_container_set_border_width(GTK_CONTAINER(window), border);
+
+    // In resizable mode, don't let the window shrink below a usable width.
+    if (allow_resize) {
+        gtk_widget_set_size_request(window, 140, height);
+    }
 
     // Create vertical box layout
     GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, spacing);
@@ -1566,17 +1873,74 @@ static GtkWidget* create_main_window(GUIState* state) {
 
         state->usage_progress = gtk_progress_bar_new();
         gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(state->usage_progress), FALSE);
-        gtk_widget_set_size_request(state->usage_progress, -1, bar_height);
+        if (!width_follows_window && bar_width > 0) {
+            gtk_widget_set_size_request(state->usage_progress, bar_width, bar_height);
+        } else {
+            gtk_widget_set_size_request(state->usage_progress, -1, bar_height);
+            gtk_widget_set_hexpand(state->usage_progress, TRUE);
+        }
+
+        // Add a dedicated style class so we can reliably control thickness via CSS
+        gtk_style_context_add_class(
+            gtk_widget_get_style_context(state->usage_progress),
+            "quota-progress"
+        );
+
+        // Apply CSS to force height
+        char css[256];
+        // In GTK3, the visible thickness is typically controlled by the internal
+        // 'trough'/'progress' nodes rather than the root 'progressbar' node.
+        snprintf(css, sizeof(css),
+                 "progressbar.quota-progress { min-height: %dpx; } "
+                 "progressbar.quota-progress trough { min-height: %dpx; } "
+                 "progressbar.quota-progress progress { min-height: %dpx; }",
+                 bar_height, bar_height, bar_height);
+        GtkCssProvider* provider = gtk_css_provider_new();
+        gtk_css_provider_load_from_data(provider, css, -1, nullptr);
+        gtk_style_context_add_provider(
+            gtk_widget_get_style_context(state->usage_progress),
+            GTK_STYLE_PROVIDER(provider),
+            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
+        );
+        g_object_unref(provider);
+
         gtk_box_pack_start(GTK_BOX(usage_vbox), state->usage_progress, FALSE, FALSE, 0);
 
         state->usage_label = gtk_label_new("Initializing...");
         gtk_label_set_xalign(GTK_LABEL(state->usage_label), 0.0);
         gtk_box_pack_start(GTK_BOX(usage_vbox), state->usage_label, FALSE, FALSE, 0);
     } else {
-        // Compact/Tiny: no frame
+        // No-frame layout (Tiny/Resizable)
         state->usage_progress = gtk_progress_bar_new();
         gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(state->usage_progress), FALSE);
-        gtk_widget_set_size_request(state->usage_progress, -1, bar_height);
+        if (!width_follows_window && bar_width > 0) {
+            gtk_widget_set_size_request(state->usage_progress, bar_width, bar_height);
+        } else {
+            gtk_widget_set_size_request(state->usage_progress, -1, bar_height);
+            gtk_widget_set_hexpand(state->usage_progress, TRUE);
+        }
+
+        gtk_style_context_add_class(
+            gtk_widget_get_style_context(state->usage_progress),
+            "quota-progress"
+        );
+
+        // Apply CSS to force height
+        char css[256];
+        snprintf(css, sizeof(css),
+                 "progressbar.quota-progress { min-height: %dpx; } "
+                 "progressbar.quota-progress trough { min-height: %dpx; } "
+                 "progressbar.quota-progress progress { min-height: %dpx; }",
+                 bar_height, bar_height, bar_height);
+        GtkCssProvider* provider = gtk_css_provider_new();
+        gtk_css_provider_load_from_data(provider, css, -1, nullptr);
+        gtk_style_context_add_provider(
+            gtk_widget_get_style_context(state->usage_progress),
+            GTK_STYLE_PROVIDER(provider),
+            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
+        );
+        g_object_unref(provider);
+
         gtk_box_pack_start(GTK_BOX(vbox), state->usage_progress, FALSE, FALSE, 0);
 
         state->usage_label = gtk_label_new("Initializing...");
@@ -1584,41 +1948,11 @@ static GtkWidget* create_main_window(GUIState* state) {
         gtk_box_pack_start(GTK_BOX(vbox), state->usage_label, FALSE, FALSE, 0);
     }
 
-    // Reset countdown section (skip in Tiny mode)
-    if (show_reset) {
-        if (show_frames) {
-            GtkWidget* reset_frame = gtk_frame_new("Reset Countdown");
-            gtk_box_pack_start(GTK_BOX(vbox), reset_frame, FALSE, FALSE, 0);
-            GtkWidget* reset_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-            gtk_container_set_border_width(GTK_CONTAINER(reset_vbox), 10);
-            gtk_container_add(GTK_CONTAINER(reset_frame), reset_vbox);
+    // Reset countdown removed - time is now shown in usage label
+    state->reset_progress = nullptr;
+    state->reset_label = nullptr;
 
-            state->reset_progress = gtk_progress_bar_new();
-            gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(state->reset_progress), FALSE);
-            gtk_widget_set_size_request(state->reset_progress, -1, bar_height);
-            gtk_box_pack_start(GTK_BOX(reset_vbox), state->reset_progress, FALSE, FALSE, 0);
-
-            state->reset_label = gtk_label_new("Waiting for data...");
-            gtk_label_set_xalign(GTK_LABEL(state->reset_label), 0.0);
-            gtk_box_pack_start(GTK_BOX(reset_vbox), state->reset_label, FALSE, FALSE, 0);
-        } else {
-            // Compact: no frame
-            state->reset_progress = gtk_progress_bar_new();
-            gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(state->reset_progress), FALSE);
-            gtk_widget_set_size_request(state->reset_progress, -1, bar_height);
-            gtk_box_pack_start(GTK_BOX(vbox), state->reset_progress, FALSE, FALSE, 0);
-
-            state->reset_label = gtk_label_new("Waiting...");
-            gtk_label_set_xalign(GTK_LABEL(state->reset_label), 0.0);
-            gtk_box_pack_start(GTK_BOX(vbox), state->reset_label, FALSE, FALSE, 0);
-        }
-    } else {
-        // Tiny mode: no reset section at all
-        state->reset_progress = nullptr;
-        state->reset_label = nullptr;
-    }
-
-    // Timestamp label (only in Standard mode)
+    // Timestamp label (not shown in Tiny/Resizable)
     if (show_timestamp) {
         state->timestamp_label = gtk_label_new("");
         gtk_label_set_selectable(GTK_LABEL(state->timestamp_label), TRUE);
@@ -1631,23 +1965,49 @@ static GtkWidget* create_main_window(GUIState* state) {
     // Connect signals
     g_signal_connect(window, "delete-event", G_CALLBACK(on_window_delete), state);
     g_signal_connect(window, "configure-event", G_CALLBACK(on_window_configure), state);
+    g_signal_connect(window, "map-event", G_CALLBACK(on_window_map), state);
 
     return window;
 }
 
 // Create system tray icon with context menu
 static AppIndicator* create_system_tray(GUIState* state) {
-    // Try to use custom Firmware icon, fallback to default
-    const char* icon_path = "firmware-icon";  // Will look for firmware-icon.svg in icon theme paths
+    // Get the directory where the executable is located
+    char exe_path[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    std::string icon_theme_path = ".";  // Default to current directory
+
+    if (len != -1) {
+        exe_path[len] = '\0';
+        char* exe_dir = dirname(exe_path);
+        if (exe_dir) {
+            icon_theme_path = exe_dir;
+        }
+    }
+
+    // Try to use custom Firmware icon
+    // AppIndicator will look for firmware-icon.svg or firmware-icon.png in the theme path
+    const char* icon_name = "firmware-icon";
 
     AppIndicator* indicator = app_indicator_new(
         "firmware-quota-indicator",
-        icon_path,
+        icon_name,
         APP_INDICATOR_CATEGORY_APPLICATION_STATUS
     );
 
-    // Set icon theme path to current directory so it finds firmware-icon.svg
-    app_indicator_set_icon_theme_path(indicator, ".");
+    // Set icon theme path to executable's directory so it finds firmware-icon.{svg,png}
+    app_indicator_set_icon_theme_path(indicator, icon_theme_path.c_str());
+
+    // Try to set icon explicitly using full path as fallback
+    // This helps when AppIndicator's icon theme lookup fails
+    std::string icon_full_path = icon_theme_path + "/firmware-icon";
+    struct stat buffer;
+    if (stat((icon_full_path + ".png").c_str(), &buffer) == 0) {
+        app_indicator_set_icon_full(indicator, (icon_full_path + ".png").c_str(), "Firmware Quota");
+    } else if (stat((icon_full_path + ".svg").c_str(), &buffer) == 0) {
+        app_indicator_set_icon_full(indicator, (icon_full_path + ".svg").c_str(), "Firmware Quota");
+    }
+    // If neither exists, AppIndicator will use a default icon
 
     app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ACTIVE);
     app_indicator_set_title(indicator, "Firmware Quota: Initializing...");
@@ -1663,38 +2023,124 @@ static AppIndicator* create_system_tray(GUIState* state) {
     g_signal_connect(hide_item, "activate", G_CALLBACK(on_tray_hide), state);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), hide_item);
 
+    GtkWidget* reset_pos_item = gtk_menu_item_new_with_label("Reset Window Position");
+    g_signal_connect(reset_pos_item, "activate", G_CALLBACK(on_tray_reset_position), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), reset_pos_item);
+
+    // Autostart toggle (MATE honors ~/.config/autostart/*.desktop)
+    state->autostart_item = gtk_check_menu_item_new_with_label("Auto-start on Login");
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->autostart_item), is_autostart_enabled());
+    g_signal_connect(state->autostart_item, "toggled", G_CALLBACK(on_toggle_autostart), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), state->autostart_item);
+
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
-    // Window Style submenu
-    GtkWidget* style_item = gtk_menu_item_new_with_label("Window Style");
-    GtkWidget* style_submenu = gtk_menu_new();
-    gtk_menu_item_set_submenu(GTK_MENU_ITEM(style_item), style_submenu);
+    // Window Styles
+    GtkWidget* styles_item = gtk_menu_item_new_with_label("Window Style");
+    GtkWidget* styles_submenu = gtk_menu_new();
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(styles_item), styles_submenu);
 
-    GtkWidget* standard_item = gtk_menu_item_new_with_label("Standard (400×250)");
-    g_signal_connect(standard_item, "activate", G_CALLBACK(on_mode_standard), state);
-    gtk_menu_shell_append(GTK_MENU_SHELL(style_submenu), standard_item);
-
-    GtkWidget* compact_item = gtk_menu_item_new_with_label("Compact (300×150)");
-    g_signal_connect(compact_item, "activate", G_CALLBACK(on_mode_compact), state);
-    gtk_menu_shell_append(GTK_MENU_SHELL(style_submenu), compact_item);
-
-    GtkWidget* bar_item = gtk_menu_item_new_with_label("Bar (350×100) - Thick bars");
-    g_signal_connect(bar_item, "activate", G_CALLBACK(on_mode_bar), state);
-    gtk_menu_shell_append(GTK_MENU_SHELL(style_submenu), bar_item);
-
-    GtkWidget* mini_item = gtk_menu_item_new_with_label("Mini (200×120) - Chunky");
-    g_signal_connect(mini_item, "activate", G_CALLBACK(on_mode_mini), state);
-    gtk_menu_shell_append(GTK_MENU_SHELL(style_submenu), mini_item);
-
-    GtkWidget* wide_item = gtk_menu_item_new_with_label("Wide (400×80) - Large bars");
-    g_signal_connect(wide_item, "activate", G_CALLBACK(on_mode_wide), state);
-    gtk_menu_shell_append(GTK_MENU_SHELL(style_submenu), wide_item);
-
-    GtkWidget* tiny_item = gtk_menu_item_new_with_label("Tiny (150×50) - Minimal");
+    GtkWidget* tiny_item = gtk_menu_item_new_with_label("Tiny (fixed)");
     g_signal_connect(tiny_item, "activate", G_CALLBACK(on_mode_tiny), state);
-    gtk_menu_shell_append(GTK_MENU_SHELL(style_submenu), tiny_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(styles_submenu), tiny_item);
 
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), style_item);
+    GtkWidget* resizable_item = gtk_menu_item_new_with_label("Resizable (width)");
+    g_signal_connect(resizable_item, "activate", G_CALLBACK(on_mode_resizable), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(styles_submenu), resizable_item);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), styles_item);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+
+    // Refresh Rate submenu
+    GtkWidget* refresh_item = gtk_menu_item_new_with_label("Refresh Rate");
+    GtkWidget* refresh_submenu = gtk_menu_new();
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(refresh_item), refresh_submenu);
+
+    // Create radio group for refresh rate items
+    GSList* refresh_group = nullptr;
+
+    state->refresh_15_item = gtk_radio_menu_item_new_with_label(refresh_group, "15 seconds");
+    refresh_group = gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(state->refresh_15_item));
+    g_signal_connect(state->refresh_15_item, "activate", G_CALLBACK(on_refresh_15s), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(refresh_submenu), state->refresh_15_item);
+
+    state->refresh_30_item = gtk_radio_menu_item_new_with_label(refresh_group, "30 seconds");
+    refresh_group = gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(state->refresh_30_item));
+    g_signal_connect(state->refresh_30_item, "activate", G_CALLBACK(on_refresh_30s), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(refresh_submenu), state->refresh_30_item);
+
+    state->refresh_60_item = gtk_radio_menu_item_new_with_label(refresh_group, "60 seconds");
+    refresh_group = gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(state->refresh_60_item));
+    g_signal_connect(state->refresh_60_item, "activate", G_CALLBACK(on_refresh_60s), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(refresh_submenu), state->refresh_60_item);
+
+    state->refresh_120_item = gtk_radio_menu_item_new_with_label(refresh_group, "120 seconds");
+    g_signal_connect(state->refresh_120_item, "activate", G_CALLBACK(on_refresh_120s), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(refresh_submenu), state->refresh_120_item);
+
+    // Set initial active state based on current refresh_interval
+    if (state->refresh_interval == 15) {
+        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_15_item), TRUE);
+    } else if (state->refresh_interval == 30) {
+        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_30_item), TRUE);
+    } else if (state->refresh_interval == 60) {
+        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_60_item), TRUE);
+    } else if (state->refresh_interval == 120) {
+        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_120_item), TRUE);
+    }
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), refresh_item);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+
+    // Progress Bar Height submenu
+    GtkWidget* barwidth_item = gtk_menu_item_new_with_label("Progress Bar Height");
+    GtkWidget* barwidth_submenu = gtk_menu_new();
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(barwidth_item), barwidth_submenu);
+
+    // Create radio group for bar width items
+    GSList* barwidth_group = nullptr;
+
+    state->barwidth_1x_item = gtk_radio_menu_item_new_with_label(barwidth_group, "1x (Default)");
+    barwidth_group = gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(state->barwidth_1x_item));
+    g_signal_connect(state->barwidth_1x_item, "activate", G_CALLBACK(on_barwidth_1x), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(barwidth_submenu), state->barwidth_1x_item);
+
+    state->barwidth_2x_item = gtk_radio_menu_item_new_with_label(barwidth_group, "2x (Taller)");
+    barwidth_group = gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(state->barwidth_2x_item));
+    g_signal_connect(state->barwidth_2x_item, "activate", G_CALLBACK(on_barwidth_2x), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(barwidth_submenu), state->barwidth_2x_item);
+
+    state->barwidth_3x_item = gtk_radio_menu_item_new_with_label(barwidth_group, "3x (Tallest)");
+    barwidth_group = gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(state->barwidth_3x_item));
+    g_signal_connect(state->barwidth_3x_item, "activate", G_CALLBACK(on_barwidth_3x), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(barwidth_submenu), state->barwidth_3x_item);
+
+    state->barwidth_4x_item = gtk_radio_menu_item_new_with_label(barwidth_group, "4x (Extra Tall)");
+    g_signal_connect(state->barwidth_4x_item, "activate", G_CALLBACK(on_barwidth_4x), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(barwidth_submenu), state->barwidth_4x_item);
+
+    // Set initial active state based on current bar_height_multiplier
+    if (state->bar_height_multiplier == 1) {
+        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->barwidth_1x_item), TRUE);
+    } else if (state->bar_height_multiplier == 2) {
+        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->barwidth_2x_item), TRUE);
+    } else if (state->bar_height_multiplier == 3) {
+        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->barwidth_3x_item), TRUE);
+    } else if (state->bar_height_multiplier == 4) {
+        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->barwidth_4x_item), TRUE);
+    }
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), barwidth_item);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+
+    // Always on Top checkbox
+    GtkWidget* always_on_top_item = gtk_check_menu_item_new_with_label("Always on Top");
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(always_on_top_item), state->always_on_top);
+    g_signal_connect(always_on_top_item, "toggled", G_CALLBACK(on_toggle_always_on_top), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), always_on_top_item);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
@@ -1759,48 +2205,30 @@ static void update_gui_widgets(GUIState* state, const QuotaData* data) {
     double fraction = data->percentage / 100.0;
     gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(state->usage_progress), fraction);
 
-    // Update usage label
-    char usage_text[128];
-    snprintf(usage_text, sizeof(usage_text), "%.2f%% (%.4f used)",
-             data->percentage, data->used);
+    // Update usage label with time remaining
+    char usage_text[256];
+    if (data->reset_time != "N/A" && !data->reset_time.empty()) {
+        time_t reset_utc;
+        if (parse_iso8601_utc_to_time_t(data->reset_time, &reset_utc)) {
+            time_t now = time(nullptr);
+            int64_t remaining = static_cast<int64_t>(difftime(reset_utc, now));
+            if (remaining < 0) remaining = 0;
+
+            std::string duration_str = format_duration_compact(remaining);
+            snprintf(usage_text, sizeof(usage_text), "%.2f%% (%.4f used) - Reset in %s",
+                     data->percentage, data->used, duration_str.c_str());
+        } else {
+            snprintf(usage_text, sizeof(usage_text), "%.2f%% (%.4f used)",
+                     data->percentage, data->used);
+        }
+    } else {
+        snprintf(usage_text, sizeof(usage_text), "%.2f%% (%.4f used) - No active window",
+                 data->percentage, data->used);
+    }
     gtk_label_set_text(GTK_LABEL(state->usage_label), usage_text);
 
     // Apply color coding
     update_widget_colors(state->usage_progress, data->percentage);
-
-    // Update reset countdown (only if exists - not in Tiny mode)
-    if (state->reset_progress != nullptr && state->reset_label != nullptr) {
-        if (data->reset_time != "N/A" && !data->reset_time.empty()) {
-            time_t reset_utc;
-            if (parse_iso8601_utc_to_time_t(data->reset_time, &reset_utc)) {
-                time_t now = time(nullptr);
-                int64_t remaining = static_cast<int64_t>(difftime(reset_utc, now));
-                if (remaining < 0) remaining = 0;
-
-                double remaining_pct = (double)remaining / (double)kQuotaWindowSeconds;
-                if (remaining_pct > 1.0) remaining_pct = 1.0;
-
-                gtk_progress_bar_set_fraction(
-                    GTK_PROGRESS_BAR(state->reset_progress),
-                    remaining_pct
-                );
-
-                std::string duration_str = format_duration_compact(remaining);
-                char reset_text[128];
-                snprintf(reset_text, sizeof(reset_text),
-                         "%s left (of 5h)",
-                         duration_str.c_str());
-                gtk_label_set_text(GTK_LABEL(state->reset_label), reset_text);
-
-                // Color based on approaching deadline (inverse logic)
-                double approaching_pct = 100.0 - (remaining_pct * 100.0);
-                update_widget_colors(state->reset_progress, approaching_pct);
-            }
-        } else {
-            gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(state->reset_progress), 0.0);
-            gtk_label_set_text(GTK_LABEL(state->reset_label), "No active window");
-        }
-    }
 
     // Update timestamp (only if exists - not in Compact/Tiny modes)
     if (state->timestamp_label != nullptr) {
@@ -1832,18 +2260,21 @@ static void update_tray_display(GUIState* state, const QuotaData* data) {
             int64_t remaining = static_cast<int64_t>(difftime(reset_utc, now));
             std::string duration_str = format_duration_compact(remaining);
             snprintf(tooltip, sizeof(tooltip),
-                     "Firmware Quota: %.1f%%\nReset: %s",
+                     "Firmware Quota: %.1f%%\nReset: %s\nRefresh: %ds",
                      data->percentage,
-                     duration_str.c_str());
+                     duration_str.c_str(),
+                     state->refresh_interval);
         } else {
             snprintf(tooltip, sizeof(tooltip),
-                     "Firmware Quota: %.1f%%",
-                     data->percentage);
+                     "Firmware Quota: %.1f%%\nRefresh: %ds",
+                     data->percentage,
+                     state->refresh_interval);
         }
     } else {
         snprintf(tooltip, sizeof(tooltip),
-                 "Firmware Quota: %.1f%%\nNo active window",
-                 data->percentage);
+                 "Firmware Quota: %.1f%%\nNo active window\nRefresh: %ds",
+                 data->percentage,
+                 state->refresh_interval);
     }
 
     app_indicator_set_title(state->indicator, tooltip);
@@ -1852,7 +2283,11 @@ static void update_tray_display(GUIState* state, const QuotaData* data) {
 // Show error in GUI
 static void show_error_in_gui(GUIState* state, const char* message) {
     gtk_label_set_text(GTK_LABEL(state->usage_label), "Error fetching data");
-    gtk_label_set_text(GTK_LABEL(state->reset_label), message);
+
+    // Only set reset label if it exists (not nullptr in Tiny/Gauge modes)
+    if (state->reset_label != nullptr) {
+        gtk_label_set_text(GTK_LABEL(state->reset_label), message);
+    }
 
     // Show notification
     NotifyNotification* notification = notify_notification_new(
@@ -2008,10 +2443,40 @@ static void load_gui_state(GUIState* state) {
             state->window_y = std::atoi(value.c_str());
         } else if (key == "window_visible") {
             state->window_visible = (value == "1");
+        } else if (key == "always_on_top") {
+            state->always_on_top = (value == "1");
         } else if (key == "gui_mode") {
             int mode = std::atoi(value.c_str());
-            if (mode >= 0 && mode <= 6) {
+            if (mode >= 0 && mode <= 1) {
                 state->gui_mode = static_cast<GUIMode>(mode);
+            }
+        } else if (key == "refresh_interval") {
+            state->refresh_interval = std::atoi(value.c_str());
+            if (state->refresh_interval < 1) {
+                state->refresh_interval = 15;  // Sanity check
+            }
+        } else if (key == "bar_height_multiplier") {
+            state->bar_height_multiplier = std::atoi(value.c_str());
+            if (state->bar_height_multiplier < 1 || state->bar_height_multiplier > 4) {
+                state->bar_height_multiplier = 2;  // Sanity check
+            }
+        } else if (key.find("mode_") == 0) {
+            // Parse mode_X_y or mode_X_x
+            size_t first_underscore = key.find('_', 5);
+            if (first_underscore != std::string::npos) {
+                int mode_num = std::atoi(key.substr(5, first_underscore - 5).c_str());
+                std::string coord = key.substr(first_underscore + 1);
+
+                if (mode_num >= 0 && mode_num <= 1) {
+                    GUIMode mode = static_cast<GUIMode>(mode_num);
+                    int coord_value = std::atoi(value.c_str());
+
+                    if (coord == "x") {
+                        state->mode_positions[mode].first = coord_value;
+                    } else if (coord == "y") {
+                        state->mode_positions[mode].second = coord_value;
+                    }
+                }
             }
         }
     }
@@ -2027,19 +2492,43 @@ static void save_gui_state(const GUIState* state) {
     std::ofstream file(config_path);
     if (!file.is_open()) return;
 
-    file << "window_x=" << state->window_x << "\n";
-    file << "window_y=" << state->window_y << "\n";
+    // Persist the actual current window position (not just last configure-event).
+    int saved_x = state->window_x;
+    int saved_y = state->window_y;
+    if (state->window) {
+        gtk_window_get_position(GTK_WINDOW(state->window), &saved_x, &saved_y);
+    }
+
+    file << "window_x=" << saved_x << "\n";
+    file << "window_y=" << saved_y << "\n";
     file << "window_visible=" << (state->window_visible ? "1" : "0") << "\n";
+    file << "always_on_top=" << (state->always_on_top ? "1" : "0") << "\n";
     file << "gui_mode=" << static_cast<int>(state->gui_mode) << "\n";
+    file << "refresh_interval=" << state->refresh_interval << "\n";
+    file << "bar_height_multiplier=" << state->bar_height_multiplier << "\n";
+
+    // Save per-mode positions
+    for (const auto& pos : state->mode_positions) {
+        const int out_x = (pos.first == state->gui_mode) ? saved_x : pos.second.first;
+        const int out_y = (pos.first == state->gui_mode) ? saved_y : pos.second.second;
+        file << "mode_" << static_cast<int>(pos.first) << "_x=" << out_x << "\n";
+        file << "mode_" << static_cast<int>(pos.first) << "_y=" << out_y << "\n";
+    }
+
+    // Ensure current mode has an entry even if never switched/moved.
+    if (state->mode_positions.find(state->gui_mode) == state->mode_positions.end()) {
+        file << "mode_" << static_cast<int>(state->gui_mode) << "_x=" << saved_x << "\n";
+        file << "mode_" << static_cast<int>(state->gui_mode) << "_y=" << saved_y << "\n";
+    }
+
     file.close();
 }
 
 // Restore window position and visibility
 static void restore_window_position(GUIState* state) {
-    if (state->window_x >= 0 && state->window_y >= 0) {
-        gtk_window_move(GTK_WINDOW(state->window),
-                       state->window_x,
-                       state->window_y);
+    // Apply always on top setting
+    if (state->always_on_top) {
+        gtk_window_set_keep_above(GTK_WINDOW(state->window), TRUE);
     }
 
     if (state->window_visible) {
@@ -2079,10 +2568,18 @@ static int run_gui_mode(const std::string& api_key,
     // Load saved state (may override gui_mode if saved)
     load_gui_state(state);
 
-    // If gui_mode was explicitly set on command line, override saved setting
-    if (gui_mode != GUIMode::Standard) {
-        state->gui_mode = gui_mode;
-    }
+    // Preserve the loaded position for restore; some WMs will emit a configure
+    // event at 0,0 while mapping which would otherwise clobber state->window_x/y.
+    state->have_restore_pos = (state->window_x != -1 && state->window_y != -1);
+    state->restore_x = state->window_x;
+    state->restore_y = state->window_y;
+    state->restoring = state->have_restore_pos;
+
+    // GUI mode is always explicitly requested (this function is only called when
+    // --gui/--gui-* is used). Override any saved mode/visibility so a window
+    // reliably appears even on desktops without a working tray.
+    state->gui_mode = gui_mode;
+    state->window_visible = true;
 
     // Apply CSS styling
     apply_css_styling();
@@ -2099,7 +2596,7 @@ static int run_gui_mode(const std::string& api_key,
 
     // Start update timer (convert seconds to milliseconds)
     state->timer_id = g_timeout_add(
-        refresh_interval * 1000,
+        state->refresh_interval * 1000,
         on_timer_update,
         state
     );

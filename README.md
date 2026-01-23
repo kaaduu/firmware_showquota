@@ -71,17 +71,17 @@ Then run:
 
 ### Launching GUI Mode
 
-Launch the GUI with system tray support in different sizes:
+Launch the GUI with system tray support:
 
 ```bash
-# Standard size (400x250 window)
-./show_quota --gui
-
-# Compact size (300x150 window, no frames)
-./show_quota --gui-compact
-
-# Tiny size (150x80 window, minimal UI)
+# Tiny (fixed size)
 ./show_quota --gui-tiny
+
+# Tiny style but resizable horizontally
+./show_quota --gui-resizable
+
+# Alias for tiny
+./show_quota --gui
 ```
 
 ### GUI Command-Line Options
@@ -89,71 +89,31 @@ Launch the GUI with system tray support in different sizes:
 All standard options work with GUI mode:
 
 ```bash
-# GUI with custom refresh interval (default: 60 seconds)
-./show_quota --gui --refresh 120
+# GUI with custom refresh interval
+./show_quota --gui-tiny --refresh 120
 
 # GUI without logging
-./show_quota --gui --no-log
+./show_quota --gui-tiny --no-log
 
 # GUI with custom log file
-./show_quota --gui --log /var/log/quota.log
-
-# Compact GUI with 2-minute refresh
-./show_quota --gui-compact --refresh 120
+./show_quota --gui-tiny --log /var/log/quota.log
 ```
 
 **Note**: The `-1` (single run) option doesn't apply to GUI mode - the GUI runs continuously until you quit from the tray menu.
 
 ### GUI Presentation Modes
 
-The GUI supports seven presentation modes. Three can be launched directly from the command line, while all seven are accessible via the system tray menu:
+The GUI supports two modes (switchable from the tray menu under "Window Style"):
 
-**Standard Mode** (`--gui`):
-- Window size: 400x250
-- Shows framed sections for Usage and Reset
-- Displays detailed timestamps
-- Full-featured layout
+**Tiny (fixed)** (`--gui-tiny`):
+- Fixed 150x50 window
+- Intended for corner monitoring
 
-**Compact Mode** (`--gui-compact`):
-- Window size: 300x150
-- No frames, streamlined layout
-- Perfect for small dashboard windows
-- Essential info only
+**Resizable (width)** (`--gui-resizable`):
+- Same layout as Tiny, but the window can be resized horizontally
+- Progress bar length follows the window width
 
-**Bar Mode** (`--gui-bar`):
-- Window size: 350×100
-- Thick 30px progress bars
-- Compact horizontal layout
-- Highly visible, color-coded bars
-- Perfect for prominent monitoring
-
-**Mini Mode** (`--gui-mini`):
-- Window size: 200×120
-- Chunky 25px progress bars
-- Small footprint with big bars
-- Great visibility in small space
-
-**Wide Mode** (`--gui-wide`):
-- Window size: 400×80
-- Large 28px bars in ultra-wide format
-- Thin height, maximum width
-- Ideal for top/bottom screen placement
-
-**Tiny Mode** (`--gui-tiny`):
-- Window size: 150×50
-- Ultra-minimal layout
-- Shows only usage bar and percentage (15px)
-- No reset countdown bar
-- Perfect for corner monitoring
-
-**Gauge Mode** (tray menu only):
-- Window size: 280×280
-- Circular progress gauge
-- Large centered percentage display
-- Clean, modern radial design
-- Perfect for at-a-glance monitoring
-
-The selected mode is automatically saved and restored on restart. Use a mode flag to override the saved preference. All modes can be switched on-the-fly from the system tray right-click menu under "Window Style".
+The selected mode, window position, bar height, and refresh interval are saved and restored on restart.
 
 ### GUI Features
 
@@ -172,7 +132,7 @@ The selected mode is automatically saved and restored on restart. Use a mode fla
 - **Interactive Window**:
   - Displays real-time progress bars for quota usage and reset countdown
   - Shows percentages, timestamps, and time remaining
-  - Window position and size automatically saved between sessions
+- Window position is saved and restored (multi-monitor safe)
   - Close button hides window to tray instead of quitting
 
 - **Desktop Notifications**:
@@ -182,9 +142,10 @@ The selected mode is automatically saved and restored on restart. Use a mode fla
 
 - **System Tray Context Menu**:
   - **Show Window** / **Hide Window**: Toggle main window visibility
-  - **Window Style** submenu: Switch between all seven modes on-the-fly
-    - Standard (400×250), Compact (300×150), Bar (350×100)
-    - Mini (200×120), Wide (400×80), Tiny (150×50), Gauge (280×280)
+  - **Window Style**: `Tiny (fixed)` / `Resizable (width)`
+  - **Progress Bar Height**: Adjust thickness (1x–4x)
+  - **Reset Window Position**: Move window back to primary monitor
+  - **Auto-start on Login**: Toggle autostart via `~/.config/autostart/show_quota.desktop` (MATE)
   - **Quit**: Exit application completely
 
 - **Hover Tooltip**: Live status display showing current percentage and time until reset
@@ -196,6 +157,8 @@ The selected mode is automatically saved and restored on restart. Use a mode fla
 **Icon**: The application uses `firmware-icon.svg` for the system tray. The icon should be in the same directory as the executable, or in the system icon theme paths.
 
 **Configuration**: GUI state (window position, visibility, and selected mode) is automatically saved to `~/.firmware_quota_gui.conf` and restored on startup.
+
+**Autostart (MATE)**: The tray `Auto-start on Login` toggle writes `~/.config/autostart/show_quota.desktop` to start `show_quota --gui-tiny` on session login.
 
 **Threading**: Quota fetching runs in a background thread to keep the GUI responsive. Updates are displayed as soon as data is received.
 
