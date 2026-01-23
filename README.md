@@ -1,25 +1,51 @@
 # firmware_showquota
 
-Terminal quota viewer for the Firmware API. Shows current quota usage and a live 5-hour reset countdown in a graphical (ANSI) terminal UI.
+Quota viewer for the Firmware API with both GUI and terminal modes. Shows current quota usage and a live 5-hour reset countdown.
 
 API reference (quota endpoint): https://docs.firmware.ai/api-reference/quota
 
 ## Requirements
 
+### Terminal Mode
 - Linux/macOS (works best in a real TTY)
 - C++17 compiler (e.g. `g++`)
 - libcurl development headers (`libcurl4-openssl-dev` on Debian/Ubuntu)
 - nlohmann/json headers
 
+### GUI Mode (Optional)
+- GTK3 development libraries (`libgtk-3-dev`)
+- libayatana-appindicator3 (`libayatana-appindicator3-dev`)
+- libnotify (`libnotify-dev`)
+
+Install GUI dependencies on Debian/Ubuntu:
+```bash
+sudo apt-get install libgtk-3-dev libayatana-appindicator3-dev libnotify-dev
+```
+
 ## Build
 
-Use the provided Makefile:
+The Makefile automatically detects GUI dependencies and enables GUI support if available:
 
 ```bash
 make
 ```
 
-Or compile manually:
+If GUI libraries are installed, you'll see:
+```
+Building with GUI support
+```
+
+Otherwise:
+```
+Building without GUI support
+```
+
+You can also install GUI dependencies with:
+```bash
+make install-deps-gui
+```
+
+Or compile manually for terminal-only:
 
 ```bash
 g++ -std=c++17 -O2 -Wall -Wextra show_quota.cpp -o show_quota -lcurl
@@ -41,6 +67,96 @@ Then run:
 ./show_quota
 ```
 
+## GUI Mode
+
+Launch the GUI with system tray support in different sizes:
+
+```bash
+# Standard size (400x250 window)
+./show_quota --gui
+
+# Compact size (300x150 window, no frames)
+./show_quota --gui-compact
+
+# Tiny size (150x80 window, minimal UI)
+./show_quota --gui-tiny
+```
+
+### GUI Presentation Modes
+
+The GUI supports three presentation modes, similar to terminal modes:
+
+**Standard Mode** (`--gui`):
+- Window size: 400x250
+- Shows framed sections for Usage and Reset
+- Displays detailed timestamps
+- Full-featured layout
+
+**Compact Mode** (`--gui-compact`):
+- Window size: 300x150
+- No frames, streamlined layout
+- Perfect for small dashboard windows
+- Essential info only
+
+**Bar Mode** (`--gui-bar`):
+- Window size: 350×100
+- Thick 30px progress bars
+- Compact horizontal layout
+- Highly visible, color-coded bars
+- Perfect for prominent monitoring
+
+**Mini Mode** (`--gui-mini`):
+- Window size: 200×120
+- Chunky 25px progress bars
+- Small footprint with big bars
+- Great visibility in small space
+
+**Wide Mode** (`--gui-wide`):
+- Window size: 400×80
+- Large 28px bars in ultra-wide format
+- Thin height, maximum width
+- Ideal for top/bottom screen placement
+
+**Tiny Mode** (`--gui-tiny`):
+- Window size: 150×50
+- Ultra-minimal layout
+- Shows only usage bar and percentage (15px)
+- No reset countdown bar
+- Perfect for corner monitoring
+
+The selected mode is automatically saved and restored on restart. Use a mode flag to override the saved preference. All modes can be switched on-the-fly from the tray menu.
+
+### GUI Features
+
+- **System Tray Icon**: Color-coded icon (green/yellow/red) based on quota usage
+  - Green: <50% usage
+  - Yellow: 50-80% usage
+  - Red: ≥80% usage
+- **Hover Tooltip**: Shows current percentage and time until reset
+- **Main Window**: Displays progress bars, percentages, and timestamps
+  - Click tray icon to show/hide window
+  - Window position is saved and restored on restart
+- **Desktop Notifications**: Alerts for quota resets and high usage events
+- **Right-Click Menu**:
+  - Show / Hide window
+  - **Window Style** submenu to switch between Standard, Compact, and Tiny modes on the fly
+  - Quit
+- **Mode Switching**: Change window size/style anytime from tray menu
+- **All terminal features**: Logging, event detection, auth methods still work
+
+### GUI Screenshots
+
+The main window displays:
+- Quota Usage progress bar with percentage
+- Reset Countdown progress bar with time remaining
+- Last updated timestamp
+- Reset timestamp
+
+The system tray provides:
+- Quick access via panel icon
+- Tooltip with current status
+- Context menu for window management
+
 ## Usage
 
 Default behavior:
@@ -58,7 +174,16 @@ Help:
 Common examples:
 
 ```bash
-# Default live view (60s refresh)
+# GUI mode with system tray
+./show_quota --gui
+
+# GUI mode with custom refresh interval
+./show_quota --gui --refresh 120
+
+# GUI mode without logging
+./show_quota --gui --no-log
+
+# Default terminal live view (60s refresh)
 ./show_quota
 
 # Single run (no refresh loop)
