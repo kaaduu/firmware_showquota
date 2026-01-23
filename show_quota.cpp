@@ -15,6 +15,7 @@
 #include <optional>
 #include <cmath>
 #include <signal.h>
+#include <algorithm>
 #include <libgen.h>
 #include <linux/limits.h>
 #include <map>
@@ -532,12 +533,16 @@ enum class GUIMode {
 struct GUIState {
     // GTK Widgets
     GtkWidget* window;
+    GtkWidget* root_container;
     GtkWidget* usage_progress;
     GtkWidget* reset_progress;
     GtkWidget* usage_label;
     GtkWidget* reset_label;
     GtkWidget* timestamp_label;
     GtkWidget* gauge_drawing_area;
+
+    // CSS providers
+    GtkCssProvider* theme_provider;
 
     // System Tray
     AppIndicator* indicator;
@@ -547,6 +552,8 @@ struct GUIState {
     GtkWidget* refresh_60_item;
     GtkWidget* refresh_120_item;
     GtkWidget* autostart_item;
+    GtkWidget* titlebar_item;
+    GtkWidget* darkmode_item;
     GtkWidget* barwidth_1x_item;
     GtkWidget* barwidth_2x_item;
     GtkWidget* barwidth_3x_item;
@@ -571,33 +578,41 @@ struct GUIState {
     // Window State
     int window_x;
     int window_y;
+    int window_w;
     bool window_visible;
     bool always_on_top;
+    bool window_decorated;
+    bool dark_mode;
     GUIMode gui_mode;
 
     // Restore state (needed because some WMs emit an initial configure-event at
     // 0,0 while mapping, which would otherwise clobber the saved position).
     int restore_x;
     int restore_y;
+    int restore_w;
     bool have_restore_pos;
+    bool have_restore_size;
     bool restoring;
 
     // Per-mode position memory
     std::map<GUIMode, std::pair<int, int>> mode_positions;
 
     // Constructor with defaults
-    GUIState() : window(nullptr), usage_progress(nullptr), reset_progress(nullptr),
+    GUIState() : window(nullptr), root_container(nullptr), usage_progress(nullptr), reset_progress(nullptr),
                  usage_label(nullptr), reset_label(nullptr), timestamp_label(nullptr),
-                 gauge_drawing_area(nullptr), indicator(nullptr), tray_menu(nullptr),
+                 gauge_drawing_area(nullptr), theme_provider(nullptr),
+                 indicator(nullptr), tray_menu(nullptr),
                  refresh_15_item(nullptr), refresh_30_item(nullptr),
                  refresh_60_item(nullptr), refresh_120_item(nullptr),
-                 autostart_item(nullptr),
+                 autostart_item(nullptr), titlebar_item(nullptr), darkmode_item(nullptr),
                  barwidth_1x_item(nullptr), barwidth_2x_item(nullptr),
                  barwidth_3x_item(nullptr), barwidth_4x_item(nullptr),
                  logging_enabled(true), refresh_interval(15), bar_height_multiplier(1),
-                 timer_id(0), window_x(-1), window_y(-1), window_visible(true),
-                 always_on_top(false), gui_mode(GUIMode::Tiny),
-                 restore_x(-1), restore_y(-1), have_restore_pos(false), restoring(false) {
+                 timer_id(0), window_x(-1), window_y(-1), window_w(-1), window_visible(true),
+                 always_on_top(false), window_decorated(true), dark_mode(false),
+                 gui_mode(GUIMode::Tiny),
+                 restore_x(-1), restore_y(-1), restore_w(-1),
+                 have_restore_pos(false), have_restore_size(false), restoring(false) {
         current_quota.used = 0.0;
         current_quota.percentage = 0.0;
         current_quota.reset_time = "";
@@ -869,7 +884,8 @@ void write_log_entry(const std::string& log_file, const QuotaData& data, const s
 // Forward declaration for GUI mode
 static int run_gui_mode(const std::string& api_key, int refresh_interval,
                        const std::string& log_file, bool logging_enabled,
-                       GUIMode gui_mode, int* argc, char*** argv);
+                       const std::optional<GUIMode>& forced_gui_mode,
+                       int* argc, char*** argv);
 #endif
 
 // Print usage information
@@ -1080,7 +1096,7 @@ int main(int argc, char* argv[]) {
     std::string log_file = "show_quota.log";
     bool logging_enabled = true;
 #ifdef GUI_MODE_ENABLED
-    GUIMode selected_gui_mode = GUIMode::Tiny;
+    std::optional<GUIMode> forced_gui_mode;
 #endif
 
     // Parse command-line arguments
@@ -1093,17 +1109,17 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--gui" || arg == "-g") {
             gui_mode = true;
 #ifdef GUI_MODE_ENABLED
-            selected_gui_mode = GUIMode::Tiny;
+            forced_gui_mode.reset();
 #endif
         } else if (arg == "--gui-resizable") {
             gui_mode = true;
 #ifdef GUI_MODE_ENABLED
-            selected_gui_mode = GUIMode::Resizable;
+            forced_gui_mode = GUIMode::Resizable;
 #endif
         } else if (arg == "--gui-tiny") {
             gui_mode = true;
 #ifdef GUI_MODE_ENABLED
-            selected_gui_mode = GUIMode::Tiny;
+            forced_gui_mode = GUIMode::Tiny;
 #endif
         } else if (arg == "-1") {
             refresh_interval = 0;
@@ -1180,7 +1196,7 @@ int main(int argc, char* argv[]) {
     // GUI mode dispatcher
     if (gui_mode) {
 #ifdef GUI_MODE_ENABLED
-        result = run_gui_mode(api_key, refresh_interval, log_file, logging_enabled, selected_gui_mode, &argc, &argv);
+        result = run_gui_mode(api_key, refresh_interval, log_file, logging_enabled, forced_gui_mode, &argc, &argv);
         curl_global_cleanup();
         return result;
 #else
@@ -1270,6 +1286,9 @@ static void on_mode_resizable(GtkMenuItem* item, gpointer user_data);
 static void on_tray_reset_position(GtkMenuItem* item, gpointer user_data);
 static gboolean on_window_map(GtkWidget* widget, GdkEvent* event, gpointer user_data);
 static void on_toggle_autostart(GtkCheckMenuItem* item, gpointer user_data);
+static void on_toggle_titlebar(GtkCheckMenuItem* item, gpointer user_data);
+static gboolean on_window_button_press(GtkWidget* widget, GdkEventButton* event, gpointer user_data);
+static void on_toggle_dark_mode(GtkCheckMenuItem* item, gpointer user_data);
 
 static bool get_primary_monitor_workarea(GdkRectangle* out_workarea);
 static void move_window_to_primary_monitor(GUIState* state);
@@ -1278,6 +1297,24 @@ static std::string get_executable_path();
 static std::string get_autostart_desktop_path();
 static bool is_autostart_enabled();
 static bool set_autostart_enabled(bool enabled);
+
+static void apply_window_theme(GUIState* state);
+
+static int clamp_saved_width(int w) {
+    // Minimum usable width
+    w = std::max(w, 140);
+
+    // Best-effort cap to primary monitor workarea width
+    GdkRectangle wa;
+    if (get_primary_monitor_workarea(&wa) && wa.width > 80) {
+        w = std::min(w, wa.width - 40);
+    } else {
+        // Fallback cap
+        w = std::min(w, 2000);
+    }
+
+    return w;
+}
 
 // Apply CSS styling for color-coded progress bars
 static void apply_css_styling() {
@@ -1303,6 +1340,63 @@ static void apply_css_styling() {
         GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
     );
     g_object_unref(provider);
+}
+
+static void apply_window_theme(GUIState* state) {
+    if (!state || !state->window) return;
+
+    // Create provider lazily; it follows the window across recreations.
+    if (!state->theme_provider) {
+        state->theme_provider = gtk_css_provider_new();
+    }
+
+    // Apply to the window/root container so we can theme background and border.
+    GtkStyleContext* wctx = gtk_widget_get_style_context(state->window);
+    gtk_style_context_add_provider(
+        wctx,
+        GTK_STYLE_PROVIDER(state->theme_provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
+    );
+
+    if (state->root_container) {
+        GtkStyleContext* rctx = gtk_widget_get_style_context(state->root_container);
+        gtk_style_context_add_provider(
+            rctx,
+            GTK_STYLE_PROVIDER(state->theme_provider),
+            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
+        );
+    }
+
+    // Use style classes rather than global selectors.
+    gtk_style_context_remove_class(wctx, "quota-dark");
+    gtk_style_context_remove_class(wctx, "quota-light");
+    gtk_style_context_remove_class(wctx, "quota-borderless");
+
+    if (state->dark_mode) {
+        gtk_style_context_add_class(wctx, "quota-dark");
+    } else {
+        gtk_style_context_add_class(wctx, "quota-light");
+    }
+    if (!state->window_decorated) {
+        gtk_style_context_add_class(wctx, "quota-borderless");
+    }
+
+    const char* css_light =
+        "window.quota-light { background-color: #ffffff; color: #111111; } "
+        "window.quota-light label { color: #111111; } "
+        "window.quota-light progressbar text { color: #111111; } "
+        "window.quota-light.quota-borderless { border: 2px solid #000000; border-radius: 8px; } ";
+
+    const char* css_dark =
+        "window.quota-dark { background-color: #1e1f22; color: #e6e6e6; } "
+        "window.quota-dark label { color: #e6e6e6; } "
+        "window.quota-dark progressbar text { color: #e6e6e6; } "
+        "window.quota-dark progressbar trough { background-color: #2b2d31; } "
+        "window.quota-dark.quota-borderless { border: 2px solid #000000; border-radius: 8px; } ";
+
+    // Load combined CSS; class selection controls which applies.
+    std::string css = std::string(css_light) + css_dark;
+    gtk_css_provider_load_from_data(state->theme_provider, css.c_str(), -1, nullptr);
 }
 
 // Update widget colors based on percentage threshold
@@ -1342,6 +1436,8 @@ static gboolean on_window_configure(GtkWidget* widget, GdkEventConfigure* event,
     }
     state->window_x = event->x;
     state->window_y = event->y;
+    // Track width for resizable mode.
+    state->window_w = event->width;
     return FALSE;
 }
 
@@ -1349,6 +1445,7 @@ struct MoveWindowData {
     GUIState* state;
     int x;
     int y;
+    int w;
 };
 
 static gboolean move_window_to_saved_position_idle(gpointer user_data) {
@@ -1356,6 +1453,13 @@ static gboolean move_window_to_saved_position_idle(gpointer user_data) {
     if (!d || !d->state || !d->state->window) {
         delete d;
         return G_SOURCE_REMOVE;
+    }
+
+    // Apply saved width (Resizable mode only). Do this before move so the
+    // off-screen check uses the correct geometry.
+    if (d->state->gui_mode == GUIMode::Resizable && d->w > 0) {
+        const int w = clamp_saved_width(d->w);
+        gtk_window_resize(GTK_WINDOW(d->state->window), w, 50);
     }
 
     gtk_window_move(GTK_WINDOW(d->state->window), d->x, d->y);
@@ -1380,6 +1484,9 @@ static gboolean move_window_to_saved_position_idle(gpointer user_data) {
 
     d->state->window_x = d->x;
     d->state->window_y = d->y;
+    if (d->state->gui_mode == GUIMode::Resizable && d->w > 0) {
+        d->state->window_w = d->w;
+    }
     d->state->mode_positions[d->state->gui_mode] = std::make_pair(d->x, d->y);
     d->state->restoring = false;
 
@@ -1403,6 +1510,7 @@ static gboolean on_window_map(GtkWidget* widget, GdkEvent* event, gpointer user_
     d->state = state;
     d->x = state->restore_x;
     d->y = state->restore_y;
+    d->w = state->have_restore_size ? state->restore_w : -1;
     g_idle_add(move_window_to_saved_position_idle, d);
     return FALSE;
 }
@@ -1511,7 +1619,8 @@ static bool set_autostart_enabled(bool enabled) {
     f << "[Desktop Entry]\n";
     f << "Type=Application\n";
     f << "Name=show_quota\n";
-    f << "Exec=" << exec_path << " --gui-tiny\n";
+    // Use --gui so we restore the last saved GUI style.
+    f << "Exec=" << exec_path << " --gui\n";
     f << "Terminal=false\n";
     f << "X-GNOME-Autostart-enabled=" << (enabled ? "true" : "false") << "\n";
     f.close();
@@ -1529,6 +1638,60 @@ static void on_toggle_autostart(GtkCheckMenuItem* item, gpointer user_data) {
         gtk_check_menu_item_set_active(item, !enabled);
         g_signal_handlers_unblock_by_func(item, (void*)on_toggle_autostart, state);
     }
+}
+
+static void on_toggle_titlebar(GtkCheckMenuItem* item, gpointer user_data) {
+    GUIState* state = (GUIState*)user_data;
+    if (!state) return;
+    state->window_decorated = gtk_check_menu_item_get_active(item);
+    if (state->window) {
+        gtk_window_set_decorated(GTK_WINDOW(state->window), state->window_decorated ? TRUE : FALSE);
+    }
+    apply_window_theme(state);
+    save_gui_state(state);
+}
+
+static void on_toggle_dark_mode(GtkCheckMenuItem* item, gpointer user_data) {
+    GUIState* state = (GUIState*)user_data;
+    if (!state) return;
+    state->dark_mode = gtk_check_menu_item_get_active(item);
+    apply_window_theme(state);
+    save_gui_state(state);
+}
+
+// Allow dragging the window by clicking anywhere when decorations are disabled.
+static gboolean on_window_button_press(GtkWidget* widget, GdkEventButton* event, gpointer user_data) {
+    (void)widget;
+    GUIState* state = (GUIState*)user_data;
+    if (!state || !state->window) return FALSE;
+
+    if (!event || event->button != 1) return FALSE;
+
+    // Double-click toggles title bar on/off.
+    if (event->type == GDK_2BUTTON_PRESS) {
+        state->window_decorated = !state->window_decorated;
+        gtk_window_set_decorated(GTK_WINDOW(state->window), state->window_decorated ? TRUE : FALSE);
+        apply_window_theme(state);
+
+        if (state->titlebar_item) {
+            g_signal_handlers_block_by_func(state->titlebar_item, (void*)on_toggle_titlebar, state);
+            gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->titlebar_item), state->window_decorated ? TRUE : FALSE);
+            g_signal_handlers_unblock_by_func(state->titlebar_item, (void*)on_toggle_titlebar, state);
+        }
+
+        save_gui_state(state);
+        return TRUE;
+    }
+
+    // Single click-drag moves the window when decorations are disabled.
+    if (state->window_decorated) return FALSE;
+    if (event->type != GDK_BUTTON_PRESS) return FALSE;
+    gtk_window_begin_move_drag(GTK_WINDOW(state->window),
+                               (gint)event->button,
+                               (gint)event->x_root,
+                               (gint)event->y_root,
+                               (guint32)event->time);
+    return TRUE;
 }
 
 static void move_window_to_primary_monitor(GUIState* state) {
@@ -1575,8 +1738,12 @@ static void recreate_window_with_mode(GUIState* state, GUIMode new_mode) {
     if (state->window) {
         int current_x, current_y;
         gtk_window_get_position(GTK_WINDOW(state->window), &current_x, &current_y);
+        int current_w = 0;
+        int current_h = 0;
+        gtk_window_get_size(GTK_WINDOW(state->window), &current_w, &current_h);
         state->window_x = current_x;
         state->window_y = current_y;
+        state->window_w = current_w;
         state->mode_positions[state->gui_mode] = std::make_pair(current_x, current_y);
 
         // Destroy old window
@@ -1593,6 +1760,8 @@ static void recreate_window_with_mode(GUIState* state, GUIMode new_mode) {
     state->have_restore_pos = (state->window_x != -1 && state->window_y != -1);
     state->restore_x = state->window_x;
     state->restore_y = state->window_y;
+    state->have_restore_size = (state->window_w != -1);
+    state->restore_w = state->window_w;
     state->restoring = state->have_restore_pos;
 
     // Apply always on top setting
@@ -1853,15 +2022,28 @@ static GtkWidget* create_main_window(GUIState* state) {
     gtk_window_set_default_size(GTK_WINDOW(window), width, height);
     gtk_window_set_resizable(GTK_WINDOW(window), allow_resize ? TRUE : FALSE);
     gtk_container_set_border_width(GTK_CONTAINER(window), border);
+    gtk_window_set_decorated(GTK_WINDOW(window), state->window_decorated ? TRUE : FALSE);
 
     // In resizable mode, don't let the window shrink below a usable width.
     if (allow_resize) {
-        gtk_widget_set_size_request(window, 140, height);
+        // Restrict to horizontal resizing only.
+        GdkGeometry geom;
+        std::memset(&geom, 0, sizeof(geom));
+        geom.min_width = 140;
+        geom.max_width = G_MAXINT;
+        geom.min_height = height;
+        geom.max_height = height;
+        gtk_window_set_geometry_hints(GTK_WINDOW(window), window, &geom,
+                                     (GdkWindowHints)(GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE));
     }
 
     // Create vertical box layout
     GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, spacing);
+    state->root_container = vbox;
     gtk_container_add(GTK_CONTAINER(window), vbox);
+
+    // Apply theme after root container exists (for borderless outline + dark mode)
+    apply_window_theme(state);
 
     // Usage section
     if (show_frames) {
@@ -1966,6 +2148,8 @@ static GtkWidget* create_main_window(GUIState* state) {
     g_signal_connect(window, "delete-event", G_CALLBACK(on_window_delete), state);
     g_signal_connect(window, "configure-event", G_CALLBACK(on_window_configure), state);
     g_signal_connect(window, "map-event", G_CALLBACK(on_window_map), state);
+    g_signal_connect(window, "button-press-event", G_CALLBACK(on_window_button_press), state);
+    gtk_widget_add_events(window, GDK_BUTTON_PRESS_MASK);
 
     return window;
 }
@@ -2032,6 +2216,18 @@ static AppIndicator* create_system_tray(GUIState* state) {
     gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->autostart_item), is_autostart_enabled());
     g_signal_connect(state->autostart_item, "toggled", G_CALLBACK(on_toggle_autostart), state);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), state->autostart_item);
+
+    // Title bar toggle
+    state->titlebar_item = gtk_check_menu_item_new_with_label("Show Title Bar");
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->titlebar_item), state->window_decorated);
+    g_signal_connect(state->titlebar_item, "toggled", G_CALLBACK(on_toggle_titlebar), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), state->titlebar_item);
+
+    // Dark mode toggle
+    state->darkmode_item = gtk_check_menu_item_new_with_label("Dark Mode");
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->darkmode_item), state->dark_mode);
+    g_signal_connect(state->darkmode_item, "toggled", G_CALLBACK(on_toggle_dark_mode), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), state->darkmode_item);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
@@ -2441,10 +2637,21 @@ static void load_gui_state(GUIState* state) {
             state->window_x = std::atoi(value.c_str());
         } else if (key == "window_y") {
             state->window_y = std::atoi(value.c_str());
+        } else if (key == "window_w") {
+            state->window_w = std::atoi(value.c_str());
+            if (state->window_w < 1) {
+                state->window_w = -1;
+            } else {
+                state->window_w = clamp_saved_width(state->window_w);
+            }
         } else if (key == "window_visible") {
             state->window_visible = (value == "1");
         } else if (key == "always_on_top") {
             state->always_on_top = (value == "1");
+        } else if (key == "window_decorated") {
+            state->window_decorated = (value == "1");
+        } else if (key == "dark_mode") {
+            state->dark_mode = (value == "1");
         } else if (key == "gui_mode") {
             int mode = std::atoi(value.c_str());
             if (mode >= 0 && mode <= 1) {
@@ -2495,14 +2702,22 @@ static void save_gui_state(const GUIState* state) {
     // Persist the actual current window position (not just last configure-event).
     int saved_x = state->window_x;
     int saved_y = state->window_y;
+    int saved_w = state->window_w;
     if (state->window) {
         gtk_window_get_position(GTK_WINDOW(state->window), &saved_x, &saved_y);
+        int w = 0;
+        int h = 0;
+        gtk_window_get_size(GTK_WINDOW(state->window), &w, &h);
+        saved_w = clamp_saved_width(w);
     }
 
     file << "window_x=" << saved_x << "\n";
     file << "window_y=" << saved_y << "\n";
+    file << "window_w=" << saved_w << "\n";
     file << "window_visible=" << (state->window_visible ? "1" : "0") << "\n";
     file << "always_on_top=" << (state->always_on_top ? "1" : "0") << "\n";
+    file << "window_decorated=" << (state->window_decorated ? "1" : "0") << "\n";
+    file << "dark_mode=" << (state->dark_mode ? "1" : "0") << "\n";
     file << "gui_mode=" << static_cast<int>(state->gui_mode) << "\n";
     file << "refresh_interval=" << state->refresh_interval << "\n";
     file << "bar_height_multiplier=" << state->bar_height_multiplier << "\n";
@@ -2531,6 +2746,11 @@ static void restore_window_position(GUIState* state) {
         gtk_window_set_keep_above(GTK_WINDOW(state->window), TRUE);
     }
 
+    // Apply window decorations preference
+    gtk_window_set_decorated(GTK_WINDOW(state->window), state->window_decorated ? TRUE : FALSE);
+
+    apply_window_theme(state);
+
     if (state->window_visible) {
         gtk_widget_show_all(state->window);
     } else {
@@ -2544,7 +2764,7 @@ static int run_gui_mode(const std::string& api_key,
                        int refresh_interval,
                        const std::string& log_file,
                        bool logging_enabled,
-                       GUIMode gui_mode,
+                       const std::optional<GUIMode>& forced_gui_mode,
                        int* argc, char*** argv) {
 
     // Initialize GTK
@@ -2563,22 +2783,33 @@ static int run_gui_mode(const std::string& api_key,
     state->log_file = log_file;
     state->logging_enabled = logging_enabled;
     state->refresh_interval = refresh_interval;
-    state->gui_mode = gui_mode;
 
     // Load saved state (may override gui_mode if saved)
     load_gui_state(state);
+
+    // Apply explicit mode only when requested.
+    if (forced_gui_mode.has_value()) {
+        state->gui_mode = *forced_gui_mode;
+    } else {
+        // Default GUI: use saved mode if config exists, otherwise fallback.
+        // load_gui_state() keeps defaults when config is missing.
+        // Ensure the mode is in our supported range.
+        if (state->gui_mode != GUIMode::Tiny && state->gui_mode != GUIMode::Resizable) {
+            state->gui_mode = GUIMode::Tiny;
+        }
+    }
 
     // Preserve the loaded position for restore; some WMs will emit a configure
     // event at 0,0 while mapping which would otherwise clobber state->window_x/y.
     state->have_restore_pos = (state->window_x != -1 && state->window_y != -1);
     state->restore_x = state->window_x;
     state->restore_y = state->window_y;
+
+    state->have_restore_size = (state->window_w != -1);
+    state->restore_w = state->window_w;
     state->restoring = state->have_restore_pos;
 
-    // GUI mode is always explicitly requested (this function is only called when
-    // --gui/--gui-* is used). Override any saved mode/visibility so a window
-    // reliably appears even on desktops without a working tray.
-    state->gui_mode = gui_mode;
+    // Always show a window when launching GUI.
     state->window_visible = true;
 
     // Apply CSS styling

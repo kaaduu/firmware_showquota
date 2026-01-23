@@ -112,6 +112,7 @@ The GUI supports two modes (switchable from the tray menu under "Window Style"):
 **Resizable (width)** (`--gui-resizable`):
 - Same layout as Tiny, but the window can be resized horizontally
 - Progress bar length follows the window width
+- Remembers last width
 
 The selected mode, window position, bar height, and refresh interval are saved and restored on restart.
 
@@ -146,6 +147,8 @@ The selected mode, window position, bar height, and refresh interval are saved a
   - **Progress Bar Height**: Adjust thickness (1x–4x)
   - **Reset Window Position**: Move window back to primary monitor
   - **Auto-start on Login**: Toggle autostart via `~/.config/autostart/show_quota.desktop` (MATE)
+  - **Show Title Bar**: Toggle window decorations; when disabled you can drag the window from anywhere; double-click the window to toggle
+  - **Dark Mode**: Toggle dark/light appearance
   - **Quit**: Exit application completely
 
 - **Hover Tooltip**: Live status display showing current percentage and time until reset
@@ -158,7 +161,9 @@ The selected mode, window position, bar height, and refresh interval are saved a
 
 **Configuration**: GUI state (window position, visibility, and selected mode) is automatically saved to `~/.firmware_quota_gui.conf` and restored on startup.
 
-**Autostart (MATE)**: The tray `Auto-start on Login` toggle writes `~/.config/autostart/show_quota.desktop` to start `show_quota --gui-tiny` on session login.
+**Autostart (MATE)**: The tray `Auto-start on Login` toggle writes `~/.config/autostart/show_quota.desktop` to start `show_quota --gui` on session login.
+
+If a GUI config exists, `--gui` restores the last used GUI style and window position. Use `--gui-tiny` or `--gui-resizable` to override the saved style.
 
 **Threading**: Quota fetching runs in a background thread to keep the GUI responsive. Updates are displayed as soon as data is received.
 
