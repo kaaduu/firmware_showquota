@@ -16,6 +16,15 @@
 #include <cmath>
 #include <signal.h>
 
+#ifdef GUI_MODE_ENABLED
+extern "C" {
+#include <gtk/gtk.h>
+#include <libayatana-appindicator/app-indicator.h>
+#include <libnotify/notify.h>
+}
+#include <pthread.h>
+#endif
+
 using json = nlohmann::json;
 
 static constexpr int kQuotaWindowSeconds = 5 * 60 * 60;
@@ -508,6 +517,69 @@ enum class AuthMethod {
     AuthorizationRaw,
 };
 
+#ifdef GUI_MODE_ENABLED
+// GUI presentation modes
+enum class GUIMode {
+    Standard,   // Full window (400x250)
+    Compact,    // Compact window (300x150)
+    Tiny,       // Minimal window (150x50)
+    Bar,        // Horizontal bar (350x100) - thick bars
+    Mini,       // Small with chunky bars (200x120)
+    Wide,       // Ultra-wide thin (400x80) - large bars
+    Gauge       // Circular gauge (280x280) - radial progress
+};
+
+// Structure to hold GUI state (defined here after AuthMethod)
+struct GUIState {
+    // GTK Widgets
+    GtkWidget* window;
+    GtkWidget* usage_progress;
+    GtkWidget* reset_progress;
+    GtkWidget* usage_label;
+    GtkWidget* reset_label;
+    GtkWidget* timestamp_label;
+    GtkWidget* gauge_drawing_area;  // For circular gauge mode
+
+    // System Tray
+    AppIndicator* indicator;
+    GtkWidget* tray_menu;
+
+    // Application State
+    std::string api_key;
+    std::string token;
+    std::string log_file;
+    bool logging_enabled;
+    int refresh_interval;
+    std::optional<AuthMethod> preferred_auth_method;
+
+    // Current Data
+    QuotaData current_quota;
+    std::string event_type;
+
+    // Update Timer
+    guint timer_id;
+
+    // Window State
+    int window_x;
+    int window_y;
+    bool window_visible;
+    GUIMode gui_mode;
+
+    // Constructor with defaults
+    GUIState() : window(nullptr), usage_progress(nullptr), reset_progress(nullptr),
+                 usage_label(nullptr), reset_label(nullptr), timestamp_label(nullptr),
+                 gauge_drawing_area(nullptr), indicator(nullptr), tray_menu(nullptr),
+                 logging_enabled(true), refresh_interval(60),
+                 timer_id(0), window_x(-1), window_y(-1), window_visible(true),
+                 gui_mode(GUIMode::Standard) {
+        current_quota.used = 0.0;
+        current_quota.percentage = 0.0;
+        current_quota.reset_time = "";
+        current_quota.timestamp = 0;
+    }
+};
+#endif
+
 static std::string build_auth_header(AuthMethod method, const std::string& api_key, const std::string& token) {
     switch (method) {
         case AuthMethod::BearerFullKey:
@@ -767,11 +839,21 @@ void write_log_entry(const std::string& log_file, const QuotaData& data, const s
     file.close();
 }
 
+#ifdef GUI_MODE_ENABLED
+// Forward declaration for GUI mode
+static int run_gui_mode(const std::string& api_key, int refresh_interval,
+                       const std::string& log_file, bool logging_enabled,
+                       GUIMode gui_mode, int* argc, char*** argv);
+#endif
+
 // Print usage information
 void print_usage(const char* program_name) {
     std::cerr << "Usage: " << program_name << " [OPTIONS] [API_KEY]" << std::endl;
     std::cerr << std::endl;
     std::cerr << "Options:" << std::endl;
+    std::cerr << "  --gui, -g            Launch GUI mode with system tray icon (standard size)" << std::endl;
+    std::cerr << "  --gui-compact        Launch GUI in compact mode (300x150 window)" << std::endl;
+    std::cerr << "  --gui-tiny           Launch GUI in tiny mode (150x80 window)" << std::endl;
     std::cerr << "  --refresh <seconds>  Refresh continuously every N seconds (default/min: 60)" << std::endl;
     std::cerr << "  -1                   Single run (no refresh loop)" << std::endl;
     std::cerr << "  --text              Pure text output (no progress bar)" << std::endl;
@@ -790,6 +872,9 @@ void print_usage(const char* program_name) {
     std::cerr << "  Events: FIRST_RUN, UPDATE, QUOTA_RESET, POSSIBLE_RESET, HIGH_USAGE" << std::endl;
     std::cerr << std::endl;
     std::cerr << "Examples:" << std::endl;
+    std::cerr << "  " << program_name << " --gui fw_api_xxx" << std::endl;
+    std::cerr << "  " << program_name << " --gui-compact fw_api_xxx" << std::endl;
+    std::cerr << "  " << program_name << " --gui-tiny fw_api_xxx" << std::endl;
     std::cerr << "  " << program_name << " fw_api_xxx" << std::endl;
     std::cerr << "  " << program_name << " --refresh 60 fw_api_xxx" << std::endl;
     std::cerr << "  " << program_name << " -1 fw_api_xxx" << std::endl;
@@ -965,16 +1050,35 @@ int main(int argc, char* argv[]) {
     bool text_mode = false;
     bool compact_mode = false;
     bool tiny_mode = false;
+    bool gui_mode = false;
     std::string log_file = "show_quota.log";
     bool logging_enabled = true;
-    
+#ifdef GUI_MODE_ENABLED
+    GUIMode selected_gui_mode = GUIMode::Standard;
+#endif
+
     // Parse command-line arguments
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
-        
+
         if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             return 0;
+        } else if (arg == "--gui" || arg == "-g") {
+            gui_mode = true;
+#ifdef GUI_MODE_ENABLED
+            selected_gui_mode = GUIMode::Standard;
+#endif
+        } else if (arg == "--gui-compact") {
+            gui_mode = true;
+#ifdef GUI_MODE_ENABLED
+            selected_gui_mode = GUIMode::Compact;
+#endif
+        } else if (arg == "--gui-tiny") {
+            gui_mode = true;
+#ifdef GUI_MODE_ENABLED
+            selected_gui_mode = GUIMode::Tiny;
+#endif
         } else if (arg == "-1") {
             refresh_interval = 0;
         } else if (arg == "--refresh" || arg == "-r") {
@@ -1044,14 +1148,29 @@ int main(int argc, char* argv[]) {
     
     // Extract token
     std::string token = extract_token(api_key);
-    
+
     // Initialize curl globally
     curl_global_init(CURL_GLOBAL_DEFAULT);
-    
-    // Get terminal properties
-    std::optional<AuthMethod> preferred_auth_method;
-    
+
     int result = 0;
+
+    // GUI mode dispatcher
+    if (gui_mode) {
+#ifdef GUI_MODE_ENABLED
+        result = run_gui_mode(api_key, refresh_interval, log_file, logging_enabled, selected_gui_mode, &argc, &argv);
+        curl_global_cleanup();
+        return result;
+#else
+        std::cerr << "Error: GUI mode not compiled. Rebuild with GTK3 support." << std::endl;
+        std::cerr << "Install dependencies: sudo apt-get install libgtk-3-dev libayatana-appindicator3-dev libnotify-dev" << std::endl;
+        std::cerr << "Then run: make clean && make" << std::endl;
+        curl_global_cleanup();
+        return 1;
+#endif
+    }
+
+    // Terminal mode (existing code)
+    std::optional<AuthMethod> preferred_auth_method;
 
     if (refresh_interval > 0) {
         // Continuous refresh mode
@@ -1105,9 +1224,898 @@ int main(int argc, char* argv[]) {
                                          preferred_auth_method,
                                          false);
     }
-    
+
     // Cleanup curl
     curl_global_cleanup();
-    
+
     return result;
 }
+
+#ifdef GUI_MODE_ENABLED
+// ============================================================================
+// GUI Mode Implementation
+// ============================================================================
+
+// Forward declarations
+static GtkWidget* create_main_window(GUIState* state);
+static void update_gui_widgets(GUIState* state, const QuotaData* data);
+static void update_tray_display(GUIState* state, const QuotaData* data);
+static void show_desktop_notification(const std::string& event, double percentage);
+static void save_gui_state(const GUIState* state);
+static gboolean on_timer_update(gpointer user_data);
+
+// Apply CSS styling for color-coded progress bars
+static void apply_css_styling() {
+    GtkCssProvider* provider = gtk_css_provider_new();
+    const char* css =
+        ".quota-green progressbar progress { "
+        "    background-color: #4caf50; "
+        "    background-image: none; "
+        "} "
+        ".quota-yellow progressbar progress { "
+        "    background-color: #ff9800; "
+        "    background-image: none; "
+        "} "
+        ".quota-red progressbar progress { "
+        "    background-color: #f44336; "
+        "    background-image: none; "
+        "}";
+
+    gtk_css_provider_load_from_data(provider, css, -1, NULL);
+    gtk_style_context_add_provider_for_screen(
+        gdk_screen_get_default(),
+        GTK_STYLE_PROVIDER(provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
+    );
+    g_object_unref(provider);
+}
+
+// Update widget colors based on percentage threshold
+static void update_widget_colors(GtkWidget* progress, double percentage) {
+    GtkStyleContext* context = gtk_widget_get_style_context(progress);
+
+    // Remove old classes
+    gtk_style_context_remove_class(context, "quota-green");
+    gtk_style_context_remove_class(context, "quota-yellow");
+    gtk_style_context_remove_class(context, "quota-red");
+
+    // Add new class based on threshold (matching terminal thresholds)
+    if (percentage < 50.0) {
+        gtk_style_context_add_class(context, "quota-green");
+    } else if (percentage < 80.0) {
+        gtk_style_context_add_class(context, "quota-yellow");
+    } else {
+        gtk_style_context_add_class(context, "quota-red");
+    }
+}
+
+// Window delete event handler - hide instead of destroy
+static gboolean on_window_delete(GtkWidget* widget, GdkEvent* event, gpointer user_data) {
+    (void)event;
+    GUIState* state = (GUIState*)user_data;
+    gtk_widget_hide(widget);
+    state->window_visible = false;
+    return TRUE;  // Prevent default destroy
+}
+
+// Window configure event handler - track position
+static gboolean on_window_configure(GtkWidget* widget, GdkEventConfigure* event, gpointer user_data) {
+    (void)widget;
+    GUIState* state = (GUIState*)user_data;
+    state->window_x = event->x;
+    state->window_y = event->y;
+    return FALSE;
+}
+
+// Tray menu callbacks
+static void on_tray_show(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    GUIState* state = (GUIState*)user_data;
+    gtk_widget_show_all(state->window);
+    state->window_visible = true;
+}
+
+static void on_tray_hide(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    GUIState* state = (GUIState*)user_data;
+    gtk_widget_hide(state->window);
+    state->window_visible = false;
+}
+
+static void on_tray_quit(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    (void)user_data;
+    gtk_main_quit();
+}
+
+// Recreate window with new GUI mode
+static void recreate_window_with_mode(GUIState* state, GUIMode new_mode) {
+    if (state->gui_mode == new_mode) {
+        return;  // Already in this mode
+    }
+
+    // Store current visibility
+    bool was_visible = state->window_visible;
+
+    // Destroy old window
+    if (state->window) {
+        gtk_widget_destroy(state->window);
+    }
+
+    // Update mode
+    state->gui_mode = new_mode;
+
+    // Create new window with new mode
+    state->window = create_main_window(state);
+
+    // Restore visibility
+    if (was_visible) {
+        gtk_widget_show_all(state->window);
+        state->window_visible = true;
+    } else {
+        gtk_widget_realize(state->window);
+        state->window_visible = false;
+    }
+
+    // Update with current data if available
+    if (state->current_quota.timestamp > 0) {
+        update_gui_widgets(state, &state->current_quota);
+    }
+
+    // Save new mode preference
+    save_gui_state(state);
+}
+
+// Mode change callbacks
+static void on_mode_standard(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    GUIState* state = (GUIState*)user_data;
+    recreate_window_with_mode(state, GUIMode::Standard);
+}
+
+static void on_mode_compact(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    GUIState* state = (GUIState*)user_data;
+    recreate_window_with_mode(state, GUIMode::Compact);
+}
+
+static void on_mode_tiny(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    GUIState* state = (GUIState*)user_data;
+    recreate_window_with_mode(state, GUIMode::Tiny);
+}
+
+static void on_mode_bar(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    GUIState* state = (GUIState*)user_data;
+    recreate_window_with_mode(state, GUIMode::Bar);
+}
+
+static void on_mode_mini(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    GUIState* state = (GUIState*)user_data;
+    recreate_window_with_mode(state, GUIMode::Mini);
+}
+
+static void on_mode_wide(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    GUIState* state = (GUIState*)user_data;
+    recreate_window_with_mode(state, GUIMode::Wide);
+}
+
+static void on_mode_gauge(GtkMenuItem* item, gpointer user_data) {
+    (void)item;
+    GUIState* state = (GUIState*)user_data;
+    recreate_window_with_mode(state, GUIMode::Gauge);
+}
+
+// Cairo drawing callback for circular gauge
+static gboolean on_gauge_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
+    GUIState* state = (GUIState*)user_data;
+
+    int width = gtk_widget_get_allocated_width(widget);
+    int height = gtk_widget_get_allocated_height(widget);
+    double center_x = width / 2.0;
+    double center_y = height / 2.0;
+    double radius = (width < height ? width : height) / 2.0 - 20;
+
+    double percentage = state->current_quota.percentage;
+
+    // Background circle
+    cairo_set_source_rgb(cr, 0.9, 0.9, 0.9);
+    cairo_set_line_width(cr, 20);
+    cairo_arc(cr, center_x, center_y, radius, 0, 2 * M_PI);
+    cairo_stroke(cr);
+
+    // Foreground arc (progress)
+    double angle = (percentage / 100.0) * 2 * M_PI;
+
+    // Color based on percentage
+    if (percentage < 50.0) {
+        cairo_set_source_rgb(cr, 0.30, 0.69, 0.31);  // Green
+    } else if (percentage < 80.0) {
+        cairo_set_source_rgb(cr, 1.0, 0.60, 0.0);    // Orange
+    } else {
+        cairo_set_source_rgb(cr, 0.96, 0.28, 0.21);  // Red
+    }
+
+    cairo_set_line_width(cr, 20);
+    cairo_arc(cr, center_x, center_y, radius, -M_PI/2, -M_PI/2 + angle);
+    cairo_stroke(cr);
+
+    // Draw percentage text in center
+    char text[32];
+    snprintf(text, sizeof(text), "%.1f%%", percentage);
+
+    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, 36);
+
+    cairo_text_extents_t extents;
+    cairo_text_extents(cr, text, &extents);
+
+    cairo_set_source_rgb(cr, 0.2, 0.2, 0.2);
+    cairo_move_to(cr, center_x - extents.width/2 - extents.x_bearing,
+                     center_y - extents.height/2 - extents.y_bearing);
+    cairo_show_text(cr, text);
+
+    return FALSE;
+}
+
+// Create main window with widgets based on GUI mode
+static GtkWidget* create_main_window(GUIState* state) {
+    // Create window
+    GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+
+    // Configure window based on mode
+    int width, height, border, spacing, bar_height;
+    const char* title;
+    bool show_frames = true;
+    bool show_timestamp = true;
+    bool show_reset = true;
+
+    switch (state->gui_mode) {
+        case GUIMode::Tiny:
+            width = 150;
+            height = 50;
+            border = 5;
+            spacing = 3;
+            bar_height = 15;
+            title = "Quota";
+            show_frames = false;
+            show_timestamp = false;
+            show_reset = false;  // Tiny mode: only usage bar
+            break;
+        case GUIMode::Bar:
+            width = 350;
+            height = 100;
+            border = 8;
+            spacing = 5;
+            bar_height = 30;  // Thick bars!
+            title = "Quota";
+            show_frames = false;
+            show_timestamp = false;
+            break;
+        case GUIMode::Mini:
+            width = 200;
+            height = 120;
+            border = 6;
+            spacing = 4;
+            bar_height = 25;  // Chunky bars
+            title = "Quota";
+            show_frames = false;
+            show_timestamp = false;
+            break;
+        case GUIMode::Wide:
+            width = 400;
+            height = 80;
+            border = 6;
+            spacing = 4;
+            bar_height = 28;  // Large bars in wide format
+            title = "Firmware Quota";
+            show_frames = false;
+            show_timestamp = false;
+            break;
+        case GUIMode::Gauge:
+            width = 280;
+            height = 280;
+            border = 10;
+            spacing = 5;
+            bar_height = 0;  // No bars, using circular gauge
+            title = "Quota";
+            show_frames = false;
+            show_timestamp = false;
+            show_reset = false;  // Circular gauge shows only usage
+            break;
+        case GUIMode::Compact:
+            width = 300;
+            height = 150;
+            border = 8;
+            spacing = 5;
+            bar_height = 20;
+            title = "Firmware Quota";
+            show_frames = false;
+            show_timestamp = false;
+            break;
+        case GUIMode::Standard:
+        default:
+            width = 400;
+            height = 250;
+            border = 10;
+            spacing = 10;
+            bar_height = 30;
+            title = "Firmware API Quota Monitor";
+            break;
+    }
+
+    gtk_window_set_title(GTK_WINDOW(window), title);
+    gtk_window_set_default_size(GTK_WINDOW(window), width, height);
+    gtk_window_set_resizable(GTK_WINDOW(window), FALSE);
+    gtk_container_set_border_width(GTK_CONTAINER(window), border);
+
+    // Create vertical box layout
+    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, spacing);
+    gtk_container_add(GTK_CONTAINER(window), vbox);
+
+    // Usage section
+    if (show_frames) {
+        GtkWidget* usage_frame = gtk_frame_new("Quota Usage");
+        gtk_box_pack_start(GTK_BOX(vbox), usage_frame, FALSE, FALSE, 0);
+        GtkWidget* usage_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+        gtk_container_set_border_width(GTK_CONTAINER(usage_vbox), 10);
+        gtk_container_add(GTK_CONTAINER(usage_frame), usage_vbox);
+
+        state->usage_progress = gtk_progress_bar_new();
+        gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(state->usage_progress), FALSE);
+        gtk_widget_set_size_request(state->usage_progress, -1, bar_height);
+        gtk_box_pack_start(GTK_BOX(usage_vbox), state->usage_progress, FALSE, FALSE, 0);
+
+        state->usage_label = gtk_label_new("Initializing...");
+        gtk_label_set_xalign(GTK_LABEL(state->usage_label), 0.0);
+        gtk_box_pack_start(GTK_BOX(usage_vbox), state->usage_label, FALSE, FALSE, 0);
+    } else {
+        // Compact/Tiny: no frame
+        state->usage_progress = gtk_progress_bar_new();
+        gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(state->usage_progress), FALSE);
+        gtk_widget_set_size_request(state->usage_progress, -1, bar_height);
+        gtk_box_pack_start(GTK_BOX(vbox), state->usage_progress, FALSE, FALSE, 0);
+
+        state->usage_label = gtk_label_new("Initializing...");
+        gtk_label_set_xalign(GTK_LABEL(state->usage_label), 0.0);
+        gtk_box_pack_start(GTK_BOX(vbox), state->usage_label, FALSE, FALSE, 0);
+    }
+
+    // Reset countdown section (skip in Tiny mode)
+    if (show_reset) {
+        if (show_frames) {
+            GtkWidget* reset_frame = gtk_frame_new("Reset Countdown");
+            gtk_box_pack_start(GTK_BOX(vbox), reset_frame, FALSE, FALSE, 0);
+            GtkWidget* reset_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+            gtk_container_set_border_width(GTK_CONTAINER(reset_vbox), 10);
+            gtk_container_add(GTK_CONTAINER(reset_frame), reset_vbox);
+
+            state->reset_progress = gtk_progress_bar_new();
+            gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(state->reset_progress), FALSE);
+            gtk_widget_set_size_request(state->reset_progress, -1, bar_height);
+            gtk_box_pack_start(GTK_BOX(reset_vbox), state->reset_progress, FALSE, FALSE, 0);
+
+            state->reset_label = gtk_label_new("Waiting for data...");
+            gtk_label_set_xalign(GTK_LABEL(state->reset_label), 0.0);
+            gtk_box_pack_start(GTK_BOX(reset_vbox), state->reset_label, FALSE, FALSE, 0);
+        } else {
+            // Compact: no frame
+            state->reset_progress = gtk_progress_bar_new();
+            gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(state->reset_progress), FALSE);
+            gtk_widget_set_size_request(state->reset_progress, -1, bar_height);
+            gtk_box_pack_start(GTK_BOX(vbox), state->reset_progress, FALSE, FALSE, 0);
+
+            state->reset_label = gtk_label_new("Waiting...");
+            gtk_label_set_xalign(GTK_LABEL(state->reset_label), 0.0);
+            gtk_box_pack_start(GTK_BOX(vbox), state->reset_label, FALSE, FALSE, 0);
+        }
+    } else {
+        // Tiny mode: no reset section at all
+        state->reset_progress = nullptr;
+        state->reset_label = nullptr;
+    }
+
+    // Timestamp label (only in Standard mode)
+    if (show_timestamp) {
+        state->timestamp_label = gtk_label_new("");
+        gtk_label_set_selectable(GTK_LABEL(state->timestamp_label), TRUE);
+        gtk_label_set_xalign(GTK_LABEL(state->timestamp_label), 0.0);
+        gtk_box_pack_start(GTK_BOX(vbox), state->timestamp_label, FALSE, FALSE, 5);
+    } else {
+        state->timestamp_label = nullptr;
+    }
+
+    // Connect signals
+    g_signal_connect(window, "delete-event", G_CALLBACK(on_window_delete), state);
+    g_signal_connect(window, "configure-event", G_CALLBACK(on_window_configure), state);
+
+    return window;
+}
+
+// Create system tray icon with context menu
+static AppIndicator* create_system_tray(GUIState* state) {
+    // Try to use custom Firmware icon, fallback to default
+    const char* icon_path = "firmware-icon";  // Will look for firmware-icon.svg in icon theme paths
+
+    AppIndicator* indicator = app_indicator_new(
+        "firmware-quota-indicator",
+        icon_path,
+        APP_INDICATOR_CATEGORY_APPLICATION_STATUS
+    );
+
+    // Set icon theme path to current directory so it finds firmware-icon.svg
+    app_indicator_set_icon_theme_path(indicator, ".");
+
+    app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ACTIVE);
+    app_indicator_set_title(indicator, "Firmware Quota: Initializing...");
+
+    // Create context menu
+    GtkWidget* menu = gtk_menu_new();
+
+    GtkWidget* show_item = gtk_menu_item_new_with_label("Show Window");
+    g_signal_connect(show_item, "activate", G_CALLBACK(on_tray_show), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), show_item);
+
+    GtkWidget* hide_item = gtk_menu_item_new_with_label("Hide Window");
+    g_signal_connect(hide_item, "activate", G_CALLBACK(on_tray_hide), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), hide_item);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+
+    // Window Style submenu
+    GtkWidget* style_item = gtk_menu_item_new_with_label("Window Style");
+    GtkWidget* style_submenu = gtk_menu_new();
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(style_item), style_submenu);
+
+    GtkWidget* standard_item = gtk_menu_item_new_with_label("Standard (400×250)");
+    g_signal_connect(standard_item, "activate", G_CALLBACK(on_mode_standard), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(style_submenu), standard_item);
+
+    GtkWidget* compact_item = gtk_menu_item_new_with_label("Compact (300×150)");
+    g_signal_connect(compact_item, "activate", G_CALLBACK(on_mode_compact), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(style_submenu), compact_item);
+
+    GtkWidget* bar_item = gtk_menu_item_new_with_label("Bar (350×100) - Thick bars");
+    g_signal_connect(bar_item, "activate", G_CALLBACK(on_mode_bar), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(style_submenu), bar_item);
+
+    GtkWidget* mini_item = gtk_menu_item_new_with_label("Mini (200×120) - Chunky");
+    g_signal_connect(mini_item, "activate", G_CALLBACK(on_mode_mini), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(style_submenu), mini_item);
+
+    GtkWidget* wide_item = gtk_menu_item_new_with_label("Wide (400×80) - Large bars");
+    g_signal_connect(wide_item, "activate", G_CALLBACK(on_mode_wide), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(style_submenu), wide_item);
+
+    GtkWidget* tiny_item = gtk_menu_item_new_with_label("Tiny (150×50) - Minimal");
+    g_signal_connect(tiny_item, "activate", G_CALLBACK(on_mode_tiny), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(style_submenu), tiny_item);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), style_item);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+
+    GtkWidget* quit_item = gtk_menu_item_new_with_label("Quit");
+    g_signal_connect(quit_item, "activate", G_CALLBACK(on_tray_quit), state);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), quit_item);
+
+    gtk_widget_show_all(menu);
+    app_indicator_set_menu(indicator, GTK_MENU(menu));
+
+    state->tray_menu = menu;
+
+    return indicator;
+}
+
+// Update tray icon color based on quota
+static void update_tray_icon_color(AppIndicator* indicator, double percentage) {
+    // Keep the Firmware logo icon constant
+    // Color coding is shown in the progress bars instead
+    (void)indicator;
+    (void)percentage;
+    // Icon stays as "firmware-icon" always
+}
+
+// Show desktop notification for important events
+static void show_desktop_notification(const std::string& event, double percentage) {
+    const char* title;
+    char body[256];
+    NotifyUrgency urgency;
+
+    if (event == "QUOTA_RESET") {
+        title = "Quota Reset Detected";
+        snprintf(body, sizeof(body),
+                 "Your quota has been reset. Current usage: %.2f%%",
+                 percentage);
+        urgency = NOTIFY_URGENCY_NORMAL;
+    } else if (event == "HIGH_USAGE") {
+        title = "High Quota Usage Warning";
+        snprintf(body, sizeof(body),
+                 "Your quota usage has increased significantly to %.2f%%",
+                 percentage);
+        urgency = NOTIFY_URGENCY_CRITICAL;
+    } else {
+        return;  // Don't notify for other events
+    }
+
+    NotifyNotification* notification = notify_notification_new(
+        title,
+        body,
+        event == "QUOTA_RESET" ? "dialog-information" : "dialog-warning"
+    );
+
+    notify_notification_set_urgency(notification, urgency);
+    notify_notification_set_timeout(notification, 10000);  // 10 seconds
+    notify_notification_show(notification, NULL);
+    g_object_unref(notification);
+}
+
+// Update GUI widgets with quota data
+static void update_gui_widgets(GUIState* state, const QuotaData* data) {
+    // Update usage progress bar
+    double fraction = data->percentage / 100.0;
+    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(state->usage_progress), fraction);
+
+    // Update usage label
+    char usage_text[128];
+    snprintf(usage_text, sizeof(usage_text), "%.2f%% (%.4f used)",
+             data->percentage, data->used);
+    gtk_label_set_text(GTK_LABEL(state->usage_label), usage_text);
+
+    // Apply color coding
+    update_widget_colors(state->usage_progress, data->percentage);
+
+    // Update reset countdown (only if exists - not in Tiny mode)
+    if (state->reset_progress != nullptr && state->reset_label != nullptr) {
+        if (data->reset_time != "N/A" && !data->reset_time.empty()) {
+            time_t reset_utc;
+            if (parse_iso8601_utc_to_time_t(data->reset_time, &reset_utc)) {
+                time_t now = time(nullptr);
+                int64_t remaining = static_cast<int64_t>(difftime(reset_utc, now));
+                if (remaining < 0) remaining = 0;
+
+                double remaining_pct = (double)remaining / (double)kQuotaWindowSeconds;
+                if (remaining_pct > 1.0) remaining_pct = 1.0;
+
+                gtk_progress_bar_set_fraction(
+                    GTK_PROGRESS_BAR(state->reset_progress),
+                    remaining_pct
+                );
+
+                std::string duration_str = format_duration_compact(remaining);
+                char reset_text[128];
+                snprintf(reset_text, sizeof(reset_text),
+                         "%s left (of 5h)",
+                         duration_str.c_str());
+                gtk_label_set_text(GTK_LABEL(state->reset_label), reset_text);
+
+                // Color based on approaching deadline (inverse logic)
+                double approaching_pct = 100.0 - (remaining_pct * 100.0);
+                update_widget_colors(state->reset_progress, approaching_pct);
+            }
+        } else {
+            gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(state->reset_progress), 0.0);
+            gtk_label_set_text(GTK_LABEL(state->reset_label), "No active window");
+        }
+    }
+
+    // Update timestamp (only if exists - not in Compact/Tiny modes)
+    if (state->timestamp_label != nullptr) {
+        std::string formatted_time = format_timestamp(data->reset_time);
+        std::string current_time = get_timestamp_string();
+        char timestamp_text[512];
+        snprintf(timestamp_text, sizeof(timestamp_text),
+                 "Last updated: %s\nResets at: %s",
+                 current_time.c_str(),
+                 formatted_time.c_str());
+        gtk_label_set_text(GTK_LABEL(state->timestamp_label), timestamp_text);
+    }
+
+    // Store current data
+    state->current_quota = *data;
+}
+
+// Update system tray display
+static void update_tray_display(GUIState* state, const QuotaData* data) {
+    // Update icon color
+    update_tray_icon_color(state->indicator, data->percentage);
+
+    // Update tooltip
+    char tooltip[512];
+    if (data->reset_time != "N/A" && !data->reset_time.empty()) {
+        time_t reset_utc;
+        if (parse_iso8601_utc_to_time_t(data->reset_time, &reset_utc)) {
+            time_t now = time(nullptr);
+            int64_t remaining = static_cast<int64_t>(difftime(reset_utc, now));
+            std::string duration_str = format_duration_compact(remaining);
+            snprintf(tooltip, sizeof(tooltip),
+                     "Firmware Quota: %.1f%%\nReset: %s",
+                     data->percentage,
+                     duration_str.c_str());
+        } else {
+            snprintf(tooltip, sizeof(tooltip),
+                     "Firmware Quota: %.1f%%",
+                     data->percentage);
+        }
+    } else {
+        snprintf(tooltip, sizeof(tooltip),
+                 "Firmware Quota: %.1f%%\nNo active window",
+                 data->percentage);
+    }
+
+    app_indicator_set_title(state->indicator, tooltip);
+}
+
+// Show error in GUI
+static void show_error_in_gui(GUIState* state, const char* message) {
+    gtk_label_set_text(GTK_LABEL(state->usage_label), "Error fetching data");
+    gtk_label_set_text(GTK_LABEL(state->reset_label), message);
+
+    // Show notification
+    NotifyNotification* notification = notify_notification_new(
+        "Firmware Quota Error",
+        message,
+        "dialog-error"
+    );
+    notify_notification_set_urgency(notification, NOTIFY_URGENCY_NORMAL);
+    notify_notification_show(notification, NULL);
+    g_object_unref(notification);
+}
+
+// Structure for passing data between threads
+struct FetchThreadData {
+    GUIState* state;
+    RequestResult result;
+    bool success;
+    QuotaData quota_data;
+    std::string event;
+    std::optional<AuthMethod> used_method;
+};
+
+// Forward declaration
+static gboolean on_fetch_complete(gpointer user_data);
+
+// Background thread for fetching quota data
+static void* fetch_quota_thread(void* arg) {
+    FetchThreadData* data = (FetchThreadData*)arg;
+    GUIState* state = data->state;
+
+    // Perform HTTP request (reuse existing code)
+    data->result = try_auth_methods(
+        state->api_key,
+        state->token,
+        state->preferred_auth_method,
+        &data->used_method
+    );
+
+    if (data->result.curl_code != CURLE_OK ||
+        !is_http_success(data->result.http_code)) {
+        data->success = false;
+        // Schedule callback on main thread
+        g_idle_add(on_fetch_complete, data);
+        return nullptr;
+    }
+
+    // Parse JSON (reuse existing code)
+    try {
+        json j = json::parse(data->result.body);
+        double used = j["used"];
+        std::string reset = j.contains("reset") ? j["reset"].get<std::string>() : "";
+
+        data->quota_data.used = used;
+        data->quota_data.percentage = used * 100.0;
+        data->quota_data.reset_time = reset.empty() ? "N/A" : reset;
+        data->quota_data.timestamp = time(nullptr);
+
+        // Detect event (reuse existing code)
+        if (state->logging_enabled && !state->log_file.empty()) {
+            QuotaData previous = read_last_log_entry(state->log_file);
+            data->event = detect_event(data->quota_data, previous);
+            write_log_entry(state->log_file, data->quota_data, data->event);
+        }
+
+        data->success = true;
+    } catch (...) {
+        data->success = false;
+    }
+
+    // Schedule callback on main thread
+    g_idle_add(on_fetch_complete, data);
+    return nullptr;
+}
+
+// GTK main thread callback after fetch completes
+static gboolean on_fetch_complete(gpointer user_data) {
+    FetchThreadData* data = (FetchThreadData*)user_data;
+
+    if (data->success) {
+        // Update preferred auth method if changed
+        if (data->used_method.has_value()) {
+            data->state->preferred_auth_method = data->used_method;
+        }
+
+        update_gui_widgets(data->state, &data->quota_data);
+        update_tray_display(data->state, &data->quota_data);
+
+        // Show notification for important events
+        if (!data->event.empty() &&
+            (data->event == "QUOTA_RESET" || data->event == "HIGH_USAGE")) {
+            show_desktop_notification(data->event, data->quota_data.percentage);
+        }
+
+        data->state->event_type = data->event;
+    } else {
+        show_error_in_gui(data->state, "Failed to fetch quota data");
+    }
+
+    delete data;
+    return G_SOURCE_REMOVE;
+}
+
+// Timer callback for periodic updates
+static gboolean on_timer_update(gpointer user_data) {
+    GUIState* state = (GUIState*)user_data;
+
+    // Start fetch in background thread
+    FetchThreadData* data = new FetchThreadData();
+    data->state = state;
+    data->success = false;
+
+    pthread_t thread;
+    if (pthread_create(&thread, nullptr, fetch_quota_thread, data) == 0) {
+        pthread_detach(thread);
+        // Thread will call g_idle_add when done
+    } else {
+        delete data;
+    }
+
+    return G_SOURCE_CONTINUE;  // Keep timer running
+}
+
+// Load GUI state from config file
+static void load_gui_state(GUIState* state) {
+    const char* home = getenv("HOME");
+    if (!home) {
+        state->window_x = -1;
+        state->window_y = -1;
+        state->window_visible = true;
+        return;
+    }
+
+    std::string config_path = std::string(home) + "/.firmware_quota_gui.conf";
+    std::ifstream file(config_path);
+    if (!file.is_open()) {
+        state->window_x = -1;
+        state->window_y = -1;
+        state->window_visible = true;
+        return;
+    }
+
+    std::string line;
+    while (std::getline(file, line)) {
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+
+        std::string key = line.substr(0, eq);
+        std::string value = line.substr(eq + 1);
+
+        if (key == "window_x") {
+            state->window_x = std::atoi(value.c_str());
+        } else if (key == "window_y") {
+            state->window_y = std::atoi(value.c_str());
+        } else if (key == "window_visible") {
+            state->window_visible = (value == "1");
+        } else if (key == "gui_mode") {
+            int mode = std::atoi(value.c_str());
+            if (mode >= 0 && mode <= 6) {
+                state->gui_mode = static_cast<GUIMode>(mode);
+            }
+        }
+    }
+    file.close();
+}
+
+// Save GUI state to config file
+static void save_gui_state(const GUIState* state) {
+    const char* home = getenv("HOME");
+    if (!home) return;
+
+    std::string config_path = std::string(home) + "/.firmware_quota_gui.conf";
+    std::ofstream file(config_path);
+    if (!file.is_open()) return;
+
+    file << "window_x=" << state->window_x << "\n";
+    file << "window_y=" << state->window_y << "\n";
+    file << "window_visible=" << (state->window_visible ? "1" : "0") << "\n";
+    file << "gui_mode=" << static_cast<int>(state->gui_mode) << "\n";
+    file.close();
+}
+
+// Restore window position and visibility
+static void restore_window_position(GUIState* state) {
+    if (state->window_x >= 0 && state->window_y >= 0) {
+        gtk_window_move(GTK_WINDOW(state->window),
+                       state->window_x,
+                       state->window_y);
+    }
+
+    if (state->window_visible) {
+        gtk_widget_show_all(state->window);
+    } else {
+        // Start hidden, only tray icon visible
+        gtk_widget_realize(state->window);
+    }
+}
+
+// GUI main function
+static int run_gui_mode(const std::string& api_key,
+                       int refresh_interval,
+                       const std::string& log_file,
+                       bool logging_enabled,
+                       GUIMode gui_mode,
+                       int* argc, char*** argv) {
+
+    // Initialize GTK
+    if (!gtk_init_check(argc, argv)) {
+        std::cerr << "Failed to initialize GTK. Install libgtk-3-dev." << std::endl;
+        return 1;
+    }
+
+    // Initialize libnotify
+    notify_init("Firmware Quota");
+
+    // Create GUI state
+    GUIState* state = new GUIState();
+    state->api_key = api_key;
+    state->token = extract_token(api_key);
+    state->log_file = log_file;
+    state->logging_enabled = logging_enabled;
+    state->refresh_interval = refresh_interval;
+    state->gui_mode = gui_mode;
+
+    // Load saved state (may override gui_mode if saved)
+    load_gui_state(state);
+
+    // If gui_mode was explicitly set on command line, override saved setting
+    if (gui_mode != GUIMode::Standard) {
+        state->gui_mode = gui_mode;
+    }
+
+    // Apply CSS styling
+    apply_css_styling();
+
+    // Create UI
+    state->window = create_main_window(state);
+    state->indicator = create_system_tray(state);
+
+    // Restore window position and visibility
+    restore_window_position(state);
+
+    // Initial fetch
+    on_timer_update(state);
+
+    // Start update timer (convert seconds to milliseconds)
+    state->timer_id = g_timeout_add(
+        refresh_interval * 1000,
+        on_timer_update,
+        state
+    );
+
+    // Run GTK main loop
+    gtk_main();
+
+    // Cleanup
+    save_gui_state(state);
+    if (state->timer_id > 0) {
+        g_source_remove(state->timer_id);
+    }
+    notify_uninit();
+    delete state;
+
+    return 0;
+}
+
+#endif  // GUI_MODE_ENABLED
