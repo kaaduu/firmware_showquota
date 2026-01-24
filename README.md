@@ -24,31 +24,21 @@ sudo apt-get install libgtk-3-dev libayatana-appindicator3-dev libnotify-dev
 
 ## Build
 
-The Makefile automatically detects GUI dependencies and enables GUI support if available:
+The Makefile supports building three versions:
 
 ```bash
-make
-```
+# Build all versions (recommended)
+make all-versions
 
-If GUI libraries are installed, you'll see:
-```
-Building with GUI support
-```
-
-Otherwise:
-```
-Building without GUI support
+# Build individual versions
+make text      # Terminal-only (no GUI dependencies)
+make gui       # GUI-only version
+make mixed     # Mixed version (terminal + GUI)
 ```
 
 You can also install GUI dependencies with:
 ```bash
 make install-deps-gui
-```
-
-Or compile manually for terminal-only:
-
-```bash
-g++ -std=c++17 -O2 -Wall -Wextra show_quota.cpp -o show_quota -lcurl
 ```
 
 ## API key
@@ -74,13 +64,10 @@ Then run:
 Launch the GUI with system tray support:
 
 ```bash
-# Tiny (fixed size)
-./show_quota --gui-tiny
+# GUI-only version
+./show_quota_gui
 
-# Tiny style but resizable horizontally
-./show_quota --gui-resizable
-
-# Alias for tiny
+# Mixed version with GUI
 ./show_quota --gui
 ```
 
@@ -90,39 +77,39 @@ All standard options work with GUI mode:
 
 ```bash
 # GUI with custom refresh interval
-./show_quota --gui-tiny --refresh 120
+./show_quota_gui --refresh 120
 
 # GUI without logging
-./show_quota --gui-tiny --no-log
+./show_quota_gui --no-log
 
 # GUI with custom log file
-./show_quota --gui-tiny --log /var/log/quota.log
+./show_quota_gui --log /var/log/quota.log
 ```
 
 **Note**: The `-1` (single run) option doesn't apply to GUI mode - the GUI runs continuously until you quit from the tray menu.
 
-### GUI Presentation Modes
+### Screenshots
 
-The GUI supports two modes (switchable from the tray menu under "Window Style"):
+| Light Mode | Dark Mode | Dark Mode (No Titlebar) |
+|------------|-----------|-------------------------|
+| ![Light Mode](gui-light.png) | ![Dark Mode](dark-mode.png) | ![Dark No Titlebar](dark-notitle.png) |
 
-**Tiny (fixed)** (`--gui-tiny`):
-- Fixed 150x50 window
-- Intended for corner monitoring
+### GUI Window
 
-**Resizable (width)** (`--gui-resizable`):
-- Same layout as Tiny, but the window can be resized horizontally
-- Progress bar length follows the window width
-- Remembers last width
-
-The selected mode, window position, bar height, and refresh interval are saved and restored on restart.
+The GUI displays a compact, resizable window with:
+- **Quota Usage** progress bar with percentage
+- **Default width**: 150px (resizable horizontally, min 140px)
+- **Fixed height**: 50px
+- Window position and size are saved and restored on restart
+- **Multi-monitor support**: Position is preserved across restarts on any monitor
 
 ### GUI Features
 
 - **System Tray Integration**:
   - Custom Firmware logo icon displayed in system tray
   - Persistent tray presence - application runs in background even when window is hidden
-  - Click tray icon to toggle window visibility
-  - Right-click for context menu with full controls
+  - Click tray icon to access menu
+  - Right-click on window for quick access to menu
 
 - **Color-Coded Visual Feedback**:
   - Progress bars change color based on quota usage
@@ -131,9 +118,10 @@ The selected mode, window position, bar height, and refresh interval are saved a
   - Red: ≥80% usage (high/critical)
 
 - **Interactive Window**:
-  - Displays real-time progress bars for quota usage and reset countdown
-  - Shows percentages, timestamps, and time remaining
-- Window position is saved and restored (multi-monitor safe)
+  - Displays real-time progress bar for quota usage
+  - Shows percentage and time remaining until reset
+  - **Double-click** on window to toggle titlebar on/off
+  - **Drag** window from anywhere when titlebar is hidden
   - Close button hides window to tray instead of quitting
 
 - **Desktop Notifications**:
@@ -141,14 +129,15 @@ The selected mode, window position, bar height, and refresh interval are saved a
   - High usage warnings when quota increases significantly
   - Non-intrusive desktop notifications (10-second timeout)
 
-- **System Tray Context Menu**:
+- **System Tray / Right-Click Context Menu**:
   - **Show Window** / **Hide Window**: Toggle main window visibility
-  - **Window Style**: `Tiny (fixed)` / `Resizable (width)`
-  - **Progress Bar Height**: Adjust thickness (1x–4x)
-  - **Reset Window Position**: Move window back to primary monitor
-  - **Auto-start on Login**: Toggle autostart via `~/.config/autostart/show_quota.desktop` (MATE)
+  - **Save Position**: Manually save current window position and size
+  - **Reset Position**: Move window back to primary monitor
+  - **Auto-start on Login**: Toggle autostart via `~/.config/autostart/firmware_quota.desktop`
   - **Show Title Bar**: Toggle window decorations; when disabled you can drag the window from anywhere; double-click the window to toggle
   - **Dark Mode**: Toggle dark/light appearance
+  - **Refresh Rate**: 15s / 30s / 60s / 120s
+  - **Progress Bar Height**: Adjust thickness (1x–4x)
   - **Quit**: Exit application completely
 
 - **Hover Tooltip**: Live status display showing current percentage and time until reset
@@ -157,28 +146,32 @@ The selected mode, window position, bar height, and refresh interval are saved a
 
 ### GUI Technical Details
 
-**Icon**: The application uses `firmware-icon.svg` for the system tray. The icon should be in the same directory as the executable, or in the system icon theme paths.
+**Icon**: The application uses `firmware-icon.svg` or `firmware-icon.png` for the system tray. The icon should be in the same directory as the executable.
 
-**Configuration**: GUI state (window position, visibility, and selected mode) is automatically saved to `~/.firmware_quota_gui.conf` and restored on startup.
+**Configuration**: GUI state is automatically saved to `~/.firmware_quota_gui.conf` and restored on startup:
+- Window position (x, y) - multi-monitor safe
+- Window width
+- Visibility state
+- Always on top setting
+- Titlebar/decorated state
+- Dark mode preference
+- Refresh interval
+- Progress bar height multiplier
 
-**Autostart (MATE)**: The tray `Auto-start on Login` toggle writes `~/.config/autostart/show_quota.desktop` to start `show_quota --gui` on session login.
-
-If a GUI config exists, `--gui` restores the last used GUI style and window position. Use `--gui-tiny` or `--gui-resizable` to override the saved style.
+**Autostart**: The tray `Auto-start on Login` toggle writes `~/.config/autostart/firmware_quota.desktop` which uses the wrapper script to start the best available GUI version.
 
 **Threading**: Quota fetching runs in a background thread to keep the GUI responsive. Updates are displayed as soon as data is received.
 
 **Main Window Components**:
-- Quota Usage progress bar with percentage and exact value
-- Reset Countdown progress bar with time remaining (not shown in Tiny mode)
-- Timestamp labels showing last update and reset time (Standard mode only)
-- Color-coded bars that update dynamically based on thresholds
+- Quota Usage progress bar with percentage
+- Color-coded bar that updates dynamically based on thresholds
 
 **System Tray Components**:
 - Persistent tray icon for quick access
 - Live tooltip with current quota status
 - Context menu for full application control
 
-## Usage
+## Terminal Usage
 
 Default behavior:
 
@@ -311,3 +304,15 @@ R:[████░░░░░░░░░░░░] 12m8s
 ```text
 63%
 ```
+
+## Build Versions
+
+The project supports three build configurations:
+
+| Executable | Description | Dependencies |
+|------------|-------------|--------------|
+| `show_quota_text` | Terminal-only version | libcurl only |
+| `show_quota_gui` | GUI-only version | libcurl, GTK3, libayatana-appindicator3, libnotify |
+| `show_quota` | Mixed version (terminal + GUI) | All of the above |
+
+**Wrapper Script**: `show_quota_wrapper.sh` automatically selects the best available executable.
