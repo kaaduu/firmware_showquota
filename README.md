@@ -57,42 +57,13 @@ Then run:
 ./show_quota
 ```
 
-## GUI Mode
-
-### Launching GUI Mode
-
-Launch the GUI with system tray support:
-
-```bash
-# GUI-only version
-./show_quota_gui
-
-# Mixed version with GUI
-./show_quota --gui
-```
-
-### GUI Command-Line Options
-
-All standard options work with GUI mode:
-
-```bash
-# GUI with custom refresh interval
-./show_quota_gui --refresh 120
-
-# GUI without logging
-./show_quota_gui --no-log
-
-# GUI with custom log file
-./show_quota_gui --log /var/log/quota.log
-```
-
-**Note**: The `-1` (single run) option doesn't apply to GUI mode - the GUI runs continuously until you quit from the tray menu.
-
 ### Screenshots
 
 | Light Mode | Dark Mode | Dark Mode (No Titlebar) |
 |------------|-----------|-------------------------|
 | ![Light Mode](gui-light.png) | ![Dark Mode](dark-mode.png) | ![Dark No Titlebar](dark-notitle.png) |
+
+## GUI Mode
 
 ### GUI Window
 
