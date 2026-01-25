@@ -161,10 +161,19 @@ static gboolean on_usage_bar_draw(GtkWidget* widget, cairo_t* cr, gpointer user_
     double fill_r = 0.0, fill_g = 0.0, fill_b = 0.0;
     color_for_usage_pct(pct, &fill_r, &fill_g, &fill_b);
 
-    // Delta cap (accent): #03a9f4
-    const double delta_r = 0x03 / 255.0;
-    const double delta_g = 0xa9 / 255.0;
-    const double delta_b = 0xf4 / 255.0;
+    // Delta cap (accent)
+    double delta_r, delta_g, delta_b;
+    if (state->dark_mode) {
+        // #03a9f4
+        delta_r = 0x03 / 255.0;
+        delta_g = 0xa9 / 255.0;
+        delta_b = 0xf4 / 255.0;
+    } else {
+        // Darker blue for better contrast on light theme: #0050d7
+        delta_r = 0x00 / 255.0;
+        delta_g = 0x50 / 255.0;
+        delta_b = 0xd7 / 255.0;
+    }
 
     // Trough and border depend on theme.
     double trough_r, trough_g, trough_b;
@@ -226,6 +235,19 @@ static gboolean on_usage_bar_draw(GtkWidget* widget, cairo_t* cr, gpointer user_
             cairo_set_source_rgb(cr, delta_r, delta_g, delta_b);
             cairo_rectangle(cr, x0 + start_px, y0, end_px - start_px, bh);
             cairo_fill(cr);
+
+            // Add a thin separator at the start of the delta cap to make small
+            // changes visible on bright fills.
+            const double sep_x = x0 + start_px + 0.5;
+            if (state->dark_mode) {
+                cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.55);
+            } else {
+                cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.35);
+            }
+            cairo_set_line_width(cr, 1.0);
+            cairo_move_to(cr, sep_x, y0);
+            cairo_line_to(cr, sep_x, y0 + bh);
+            cairo_stroke(cr);
         }
     }
 
