@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.mate.panel.applet.FirmwareQuotaAppletFactory
+# Work around broken GTK module setups (eg appmenu-gtk-module ABI mismatch)
+Exec=/usr/bin/env -u GTK_MODULES @APPLET_LOCATION@

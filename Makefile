@@ -22,7 +22,7 @@ ifeq ($(GUI_AVAILABLE),yes)
 endif
 
 # Default target: build what's available
-.PHONY: all text gui mixed clean install install-deps-gui help
+.PHONY: all text gui mixed clean install install-deps-gui help panel-applet
 
 all: text mixed-auto
 	@echo ""
@@ -175,6 +175,7 @@ help:
 	@echo ""
 	@echo "Utilities:"
 	@echo "  make clean        - Remove built executables"
+	@echo "  make panel-applet - Build MATE panel applet (requires libmate-panel-applet-dev)"
 	@echo "  make help         - Show this help"
 	@echo ""
 	@echo "Output files:"
@@ -188,3 +189,16 @@ else
 	@echo "GUI support: NOT AVAILABLE"
 	@echo "  Run 'make install-deps-gui' to install GTK3 dependencies"
 endif
+
+# =========================================================================
+# MATE Panel Applet (out-of-process)
+# =========================================================================
+
+PANEL_APPLET_BIN = panel/firmware-quota-applet
+PANEL_APPLET_SRC = panel/firmware_quota_applet.cpp
+
+panel-applet: $(PANEL_APPLET_BIN)
+	@echo "Built $(PANEL_APPLET_BIN) (MATE panel applet factory)"
+
+$(PANEL_APPLET_BIN): $(PANEL_APPLET_SRC) $(SOURCE_COMMON) quota_common.h
+	$(CXX) $(CXXFLAGS) $(SOURCE_COMMON) $(PANEL_APPLET_SRC) -I. $$(pkg-config --cflags libmatepanelapplet-4.0) -o $(PANEL_APPLET_BIN) $(LDFLAGS) $$(pkg-config --libs libmatepanelapplet-4.0)

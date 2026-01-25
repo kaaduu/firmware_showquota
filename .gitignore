@@ -1,6 +1,7 @@
 show_quota
 show_quota_text
 show_quota_gui
+panel/firmware-quota-applet
 *.log
 *.backup
 .firmware_quota_gui.conf
