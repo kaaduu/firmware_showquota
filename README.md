@@ -163,6 +163,15 @@ The GUI displays a compact, resizable window with:
 
 **Autostart**: The tray `Auto-start on Login` toggle writes `~/.config/autostart/firmware_quota.desktop` which uses the wrapper script to start the best available GUI version.
 
+### Installer Scripts
+
+This repo includes user-local installer helpers:
+
+- `./install.sh` installs to `~/.local/bin` and creates a MATE menu entry.
+- GUI installs also create an autostart entry (`~/.config/autostart/firmware_quota.desktop`).
+- Because desktop launchers do not source `~/.bashrc`, the installer writes a private env file `~/.config/firmware-quota/env` (0600) containing `FIRMWARE_API_KEY=...` and uses it for both menu launch and autostart.
+- `./uninstall.sh` removes installed files using the manifest and also purges `~/.firmware_quota_gui.conf` and `~/show_quota.log`.
+
 **Threading**: Quota fetching runs in a background thread to keep the GUI responsive. Updates are displayed as soon as data is received.
 
 **Main Window Components**:

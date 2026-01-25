@@ -1989,18 +1989,53 @@ static void on_save_position(GtkMenuItem* item, gpointer user_data) {
 }
 
 // Refresh rate change callbacks
+// Forward declarations for refresh callbacks (needed for signal blocking)
+static void on_refresh_15s(GtkMenuItem* item, gpointer user_data);
+static void on_refresh_30s(GtkMenuItem* item, gpointer user_data);
+static void on_refresh_60s(GtkMenuItem* item, gpointer user_data);
+static void on_refresh_120s(GtkMenuItem* item, gpointer user_data);
+
+static void block_refresh_signals(GUIState* state, bool block) {
+    if (!state) return;
+    if (!state->refresh_15_item || !state->refresh_30_item || !state->refresh_60_item || !state->refresh_120_item) {
+        return;
+    }
+
+    if (block) {
+        g_signal_handlers_block_by_func(state->refresh_15_item, (void*)on_refresh_15s, state);
+        g_signal_handlers_block_by_func(state->refresh_30_item, (void*)on_refresh_30s, state);
+        g_signal_handlers_block_by_func(state->refresh_60_item, (void*)on_refresh_60s, state);
+        g_signal_handlers_block_by_func(state->refresh_120_item, (void*)on_refresh_120s, state);
+        return;
+    }
+
+    g_signal_handlers_unblock_by_func(state->refresh_15_item, (void*)on_refresh_15s, state);
+    g_signal_handlers_unblock_by_func(state->refresh_30_item, (void*)on_refresh_30s, state);
+    g_signal_handlers_unblock_by_func(state->refresh_60_item, (void*)on_refresh_60s, state);
+    g_signal_handlers_unblock_by_func(state->refresh_120_item, (void*)on_refresh_120s, state);
+}
+
 static void change_refresh_rate(GUIState* state, int new_interval) {
+    if (!state) return;
+    if (new_interval < 1) {
+        new_interval = 15;
+    }
+
     state->refresh_interval = new_interval;
 
     // Update checkmarks on menu items
+    // Block signals to prevent recursive callbacks from radio item activation.
+    block_refresh_signals(state, true);
     gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_15_item), new_interval == 15);
     gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_30_item), new_interval == 30);
     gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_60_item), new_interval == 60);
     gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_120_item), new_interval == 120);
+    block_refresh_signals(state, false);
 
     // Remove old timer
     if (state->timer_id > 0) {
         g_source_remove(state->timer_id);
+        state->timer_id = 0;
     }
 
     // Create new timer with new interval
@@ -2019,21 +2054,25 @@ static void change_refresh_rate(GUIState* state, int new_interval) {
 
 static void on_refresh_15s(GtkMenuItem* item, gpointer user_data) {
     (void)item;
+    if (!gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(item))) return;
     change_refresh_rate((GUIState*)user_data, 15);
 }
 
 static void on_refresh_30s(GtkMenuItem* item, gpointer user_data) {
     (void)item;
+    if (!gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(item))) return;
     change_refresh_rate((GUIState*)user_data, 30);
 }
 
 static void on_refresh_60s(GtkMenuItem* item, gpointer user_data) {
     (void)item;
+    if (!gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(item))) return;
     change_refresh_rate((GUIState*)user_data, 60);
 }
 
 static void on_refresh_120s(GtkMenuItem* item, gpointer user_data) {
     (void)item;
+    if (!gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(item))) return;
     change_refresh_rate((GUIState*)user_data, 120);
 }
 
