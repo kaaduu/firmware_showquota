@@ -4,6 +4,44 @@ Quota viewer for the Firmware API with both GUI and terminal modes. Shows curren
 
 API reference (quota endpoint): https://docs.firmware.ai/api-reference/quota
 
+## Screenshots
+
+| Light Mode | Dark Mode | Dark Mode (No Titlebar) |
+|------------|-----------|-------------------------|
+| ![Light Mode](gui-light.png) | ![Dark Mode](dark-mode.png) | ![Dark No Titlebar](dark-notitle.png) |
+
+## Sneak peek (TTY colored)
+
+Exact widths/colors depend on your terminal, but it looks like this:
+
+```text
+Firmware API Quota Details:
+==========================
+Usage: [██████████████░░░░░░░░░░░░░░] 63.20%
+Reset: [████░░░░░░░░░░░░░░░░░░░░░░░] 12m 08s left (of 5h)
+Resets at: 2026-01-21 18:05:00 CET
+
+Refreshing every 60 seconds (Ctrl+C to stop)...
+```
+
+Notes:
+
+- If stdout is not a TTY (piped to a file), colors are automatically disabled.
+- If your locale is UTF-8, the bars use block characters; otherwise they fall back to ASCII.
+
+### Compact mode example
+
+```text
+U:[██████████░░░░░░] 63%
+R:[████░░░░░░░░░░░░] 12m8s
+```
+
+### Tiny mode example
+
+```text
+63%
+```
+
 ## Requirements
 
 ### Terminal Mode
@@ -56,12 +94,6 @@ Then run:
 ```bash
 ./show_quota
 ```
-
-### Screenshots
-
-| Light Mode | Dark Mode | Dark Mode (No Titlebar) |
-|------------|-----------|-------------------------|
-| ![Light Mode](gui-light.png) | ![Dark Mode](dark-mode.png) | ![Dark No Titlebar](dark-notitle.png) |
 
 ## GUI Mode
 
@@ -243,38 +275,6 @@ If `wmctrl` is installed, the xterm will also be set to "always on top" (best-ef
   - The quota window is treated as a fixed 5 hours.
   - The bar drains toward the reset time.
   - Colors shift as reset approaches (green -> yellow -> red).
-
-## Sneak peek (TTY colored)
-
-Exact widths/colors depend on your terminal, but it looks like this:
-
-```text
-Firmware API Quota Details:
-==========================
-Usage: [██████████████░░░░░░░░░░░░░░] 63.20%
-Reset: [████░░░░░░░░░░░░░░░░░░░░░░░] 12m 08s left (of 5h)
-Resets at: 2026-01-21 18:05:00 CET
-
-Refreshing every 60 seconds (Ctrl+C to stop)...
-```
-
-Notes:
-
-- If stdout is not a TTY (piped to a file), colors are automatically disabled.
-- If your locale is UTF-8, the bars use block characters; otherwise they fall back to ASCII.
-
-### Compact mode example
-
-```text
-U:[██████████░░░░░░] 63%
-R:[████░░░░░░░░░░░░] 12m8s
-```
-
-### Tiny mode example
-
-```text
-63%
-```
 
 ## Build Versions
 
