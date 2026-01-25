@@ -1,0 +1,12 @@
+[Applet Factory]
+Id=FirmwareQuotaAppletFactory
+InProcess=false
+Location=@APPLET_LOCATION@
+Name=Firmware Quota Applet Factory
+Description=Factory for Firmware Quota panel applet
+
+[FirmwareQuotaApplet]
+Name=Firmware Quota
+Description=Show Firmware quota usage in the panel
+Icon=firmware-quota
+MateComponentId=OAFIID:FIRMWARE_QuotaApplet
