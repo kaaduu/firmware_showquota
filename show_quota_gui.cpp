@@ -92,19 +92,19 @@ struct GUIState {
 
     // Constructor with defaults
     GUIState() : window(nullptr), root_container(nullptr), usage_progress(nullptr), reset_progress(nullptr),
-                 usage_label(nullptr), reset_label(nullptr), timestamp_label(nullptr),
-                 gauge_drawing_area(nullptr), theme_provider(nullptr),
-                 indicator(nullptr), tray_menu(nullptr),
-                 refresh_15_item(nullptr), refresh_30_item(nullptr),
-                 refresh_60_item(nullptr), refresh_120_item(nullptr),
-                 autostart_item(nullptr), titlebar_item(nullptr), darkmode_item(nullptr),
-                 barwidth_1x_item(nullptr), barwidth_2x_item(nullptr),
-                 barwidth_3x_item(nullptr), barwidth_4x_item(nullptr),
-                 logging_enabled(true), refresh_interval(15), bar_height_multiplier(1),
-                 timer_id(0), window_x(-1), window_y(-1), window_w(-1), window_visible(true),
-                 always_on_top(false), window_decorated(true), dark_mode(false),
-                 restore_x(-1), restore_y(-1), restore_w(-1),
-                 have_restore_pos(false), have_restore_size(false), restoring(false) {
+                  usage_label(nullptr), reset_label(nullptr), timestamp_label(nullptr),
+                  gauge_drawing_area(nullptr), theme_provider(nullptr),
+                  indicator(nullptr), tray_menu(nullptr),
+                  refresh_15_item(nullptr), refresh_30_item(nullptr),
+                  refresh_60_item(nullptr), refresh_120_item(nullptr),
+                  autostart_item(nullptr), titlebar_item(nullptr), darkmode_item(nullptr),
+                  barwidth_1x_item(nullptr), barwidth_2x_item(nullptr),
+                  barwidth_3x_item(nullptr), barwidth_4x_item(nullptr),
+                  logging_enabled(true), refresh_interval(15), bar_height_multiplier(1),
+                  timer_id(0), window_x(-1), window_y(-1), window_w(-1), window_visible(true),
+                  always_on_top(false), window_decorated(true), dark_mode(false),
+                  restore_x(-1), restore_y(-1), restore_w(-1),
+                  have_restore_pos(false), have_restore_size(false), restoring(false) {
         current_quota.used = 0.0;
         current_quota.percentage = 0.0;
         current_quota.reset_time = "";
@@ -876,19 +876,54 @@ static void on_save_position(GtkMenuItem* item, gpointer user_data) {
 // Refresh Rate Management
 // ============================================================================
 
+// Forward declarations for refresh callbacks (needed for signal blocking)
+static void on_refresh_15s(GtkMenuItem* item, gpointer user_data);
+static void on_refresh_30s(GtkMenuItem* item, gpointer user_data);
+static void on_refresh_60s(GtkMenuItem* item, gpointer user_data);
+static void on_refresh_120s(GtkMenuItem* item, gpointer user_data);
+
+static void block_refresh_signals(GUIState* state, bool block) {
+    if (!state) return;
+    if (!state->refresh_15_item || !state->refresh_30_item || !state->refresh_60_item || !state->refresh_120_item) {
+        return;
+    }
+
+    if (block) {
+        g_signal_handlers_block_by_func(state->refresh_15_item, (void*)on_refresh_15s, state);
+        g_signal_handlers_block_by_func(state->refresh_30_item, (void*)on_refresh_30s, state);
+        g_signal_handlers_block_by_func(state->refresh_60_item, (void*)on_refresh_60s, state);
+        g_signal_handlers_block_by_func(state->refresh_120_item, (void*)on_refresh_120s, state);
+        return;
+    }
+
+    g_signal_handlers_unblock_by_func(state->refresh_15_item, (void*)on_refresh_15s, state);
+    g_signal_handlers_unblock_by_func(state->refresh_30_item, (void*)on_refresh_30s, state);
+    g_signal_handlers_unblock_by_func(state->refresh_60_item, (void*)on_refresh_60s, state);
+    g_signal_handlers_unblock_by_func(state->refresh_120_item, (void*)on_refresh_120s, state);
+}
+
 // Refresh rate change callbacks
 static void change_refresh_rate(GUIState* state, int new_interval) {
+    if (!state) return;
+    if (new_interval < 1) {
+        new_interval = 15;
+    }
+
     state->refresh_interval = new_interval;
 
     // Update checkmarks on menu items
+    // Block signals to prevent recursive callbacks from radio item activation.
+    block_refresh_signals(state, true);
     gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_15_item), new_interval == 15);
     gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_30_item), new_interval == 30);
     gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_60_item), new_interval == 60);
     gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(state->refresh_120_item), new_interval == 120);
+    block_refresh_signals(state, false);
 
     // Remove old timer
     if (state->timer_id > 0) {
         g_source_remove(state->timer_id);
+        state->timer_id = 0;
     }
 
     // Create new timer with new interval
@@ -907,21 +942,25 @@ static void change_refresh_rate(GUIState* state, int new_interval) {
 
 static void on_refresh_15s(GtkMenuItem* item, gpointer user_data) {
     (void)item;
+    if (!gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(item))) return;
     change_refresh_rate((GUIState*)user_data, 15);
 }
 
 static void on_refresh_30s(GtkMenuItem* item, gpointer user_data) {
     (void)item;
+    if (!gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(item))) return;
     change_refresh_rate((GUIState*)user_data, 30);
 }
 
 static void on_refresh_60s(GtkMenuItem* item, gpointer user_data) {
     (void)item;
+    if (!gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(item))) return;
     change_refresh_rate((GUIState*)user_data, 60);
 }
 
 static void on_refresh_120s(GtkMenuItem* item, gpointer user_data) {
     (void)item;
+    if (!gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(item))) return;
     change_refresh_rate((GUIState*)user_data, 120);
 }
 
