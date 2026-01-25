@@ -65,6 +65,8 @@ struct GUIState {
 
     // Current Data
     QuotaData current_quota;
+    double prev_percentage;
+    bool have_prev_percentage;
     std::string event_type;
 
     // Update Timer
@@ -107,8 +109,134 @@ struct GUIState {
         current_quota.percentage = 0.0;
         current_quota.reset_time = "";
         current_quota.timestamp = 0;
+
+        prev_percentage = 0.0;
+        have_prev_percentage = false;
     }
 };
+
+static double clamp_pct(double v) {
+    if (v < 0.0) return 0.0;
+    if (v > 100.0) return 100.0;
+    return v;
+}
+
+static void color_for_usage_pct(double pct, double* r, double* g, double* b) {
+    // Match terminal thresholds.
+    if (pct < 50.0) {
+        // #4caf50
+        *r = 0x4c / 255.0;
+        *g = 0xaf / 255.0;
+        *b = 0x50 / 255.0;
+        return;
+    }
+    if (pct < 80.0) {
+        // #ff9800
+        *r = 0xff / 255.0;
+        *g = 0x98 / 255.0;
+        *b = 0x00 / 255.0;
+        return;
+    }
+    // #f44336
+    *r = 0xf4 / 255.0;
+    *g = 0x43 / 255.0;
+    *b = 0x36 / 255.0;
+}
+
+static gboolean on_usage_bar_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
+    GUIState* state = (GUIState*)user_data;
+    if (!state) return FALSE;
+
+    GtkAllocation a;
+    gtk_widget_get_allocation(widget, &a);
+    const int w = a.width;
+    const int h = a.height;
+    if (w <= 0 || h <= 0) return FALSE;
+
+    const double pct = clamp_pct(state->current_quota.percentage);
+    const double prev = state->have_prev_percentage ? clamp_pct(state->prev_percentage) : pct;
+    const double delta = (pct > prev) ? (pct - prev) : 0.0;
+
+    // Colors
+    double fill_r = 0.0, fill_g = 0.0, fill_b = 0.0;
+    color_for_usage_pct(pct, &fill_r, &fill_g, &fill_b);
+
+    // Delta cap (accent): #03a9f4
+    const double delta_r = 0x03 / 255.0;
+    const double delta_g = 0xa9 / 255.0;
+    const double delta_b = 0xf4 / 255.0;
+
+    // Trough and border depend on theme.
+    double trough_r, trough_g, trough_b;
+    double border_r, border_g, border_b;
+    if (state->dark_mode) {
+        // #2b2d31 / #3a3d44
+        trough_r = 0x2b / 255.0;
+        trough_g = 0x2d / 255.0;
+        trough_b = 0x31 / 255.0;
+        border_r = 0x3a / 255.0;
+        border_g = 0x3d / 255.0;
+        border_b = 0x44 / 255.0;
+    } else {
+        // #e5e7eb / #cbd5e1
+        trough_r = 0xe5 / 255.0;
+        trough_g = 0xe7 / 255.0;
+        trough_b = 0xeb / 255.0;
+        border_r = 0xcb / 255.0;
+        border_g = 0xd5 / 255.0;
+        border_b = 0xe1 / 255.0;
+    }
+
+    // Geometry
+    const double pad = 1.0;
+    const double x0 = pad;
+    const double y0 = pad;
+    const double bw = std::max(0.0, (double)w - 2.0 * pad);
+    const double bh = std::max(0.0, (double)h - 2.0 * pad);
+
+    // Clear
+    cairo_set_source_rgba(cr, 0, 0, 0, 0);
+    cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+    cairo_paint(cr);
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+
+    // Trough
+    cairo_set_source_rgb(cr, trough_r, trough_g, trough_b);
+    cairo_rectangle(cr, x0, y0, bw, bh);
+    cairo_fill(cr);
+
+    // Main fill
+    const double fill_w = bw * (pct / 100.0);
+    if (fill_w > 0.0) {
+        cairo_set_source_rgb(cr, fill_r, fill_g, fill_b);
+        cairo_rectangle(cr, x0, y0, fill_w, bh);
+        cairo_fill(cr);
+    }
+
+    // Delta overlay (only newly-added segment since last refresh)
+    if (delta > 0.0 && bw > 0.0) {
+        double start_px = bw * (prev / 100.0);
+        double end_px = fill_w;
+        if (end_px > start_px) {
+            const double min_px = 2.0;
+            if (end_px - start_px < min_px) {
+                start_px = std::max(0.0, end_px - min_px);
+            }
+
+            cairo_set_source_rgb(cr, delta_r, delta_g, delta_b);
+            cairo_rectangle(cr, x0 + start_px, y0, end_px - start_px, bh);
+            cairo_fill(cr);
+        }
+    }
+
+    // Border
+    cairo_set_source_rgb(cr, border_r, border_g, border_b);
+    cairo_set_line_width(cr, 1.0);
+    cairo_rectangle(cr, x0 + 0.5, y0 + 0.5, std::max(0.0, bw - 1.0), std::max(0.0, bh - 1.0));
+    cairo_stroke(cr);
+
+    return FALSE;
+}
 
 // ============================================================================
 // Forward Declarations
@@ -164,31 +292,7 @@ static int clamp_saved_width(int w) {
 
 // Apply CSS styling for color-coded progress bars
 static void apply_css_styling() {
-    GtkCssProvider* provider = gtk_css_provider_new();
-    const char* css =
-        "progressbar.quota-green progress { "
-        "    background-color: #4caf50; "
-        "    background-image: none; "
-        "} "
-        "progressbar.quota-yellow progress { "
-        "    background-color: #ff9800; "
-        "    background-image: none; "
-        "} "
-        "progressbar.quota-red progress { "
-        "    background-color: #f44336; "
-        "    background-image: none; "
-        "} "
-        "progressbar.quota-green trough progress, progressbar.quota-yellow trough progress, progressbar.quota-red trough progress { "
-        "    background-image: none; "
-        "}";
-
-    gtk_css_provider_load_from_data(provider, css, -1, NULL);
-    gtk_style_context_add_provider_for_screen(
-        gdk_screen_get_default(),
-        GTK_STYLE_PROVIDER(provider),
-        GTK_STYLE_PROVIDER_PRIORITY_USER
-    );
-    g_object_unref(provider);
+    // Legacy: progressbar styling. The usage bar is now custom-drawn.
 }
 
 static void apply_window_theme(GUIState* state) {
@@ -249,7 +353,11 @@ static void apply_window_theme(GUIState* state) {
 }
 
 // Update widget colors based on percentage threshold
-static void update_widget_colors(GtkWidget* progress, double percentage) {
+[[maybe_unused]] static void update_widget_colors(GtkWidget* progress, double percentage) {
+    // Custom usage bar handles its own coloring.
+    if (!GTK_IS_PROGRESS_BAR(progress)) {
+        return;
+    }
     GtkStyleContext* context = gtk_widget_get_style_context(progress);
 
     // Remove old classes
@@ -266,6 +374,8 @@ static void update_widget_colors(GtkWidget* progress, double percentage) {
         gtk_style_context_add_class(context, "quota-red");
     }
 }
+
+// NOTE: left for backwards compatibility if we ever reintroduce GtkProgressBar.
 
 // ============================================================================
 // Window Event Handlers
@@ -962,38 +1072,14 @@ static GtkWidget* create_main_window(GUIState* state) {
         gtk_container_set_border_width(GTK_CONTAINER(usage_vbox), 10);
         gtk_container_add(GTK_CONTAINER(usage_frame), usage_vbox);
 
-        state->usage_progress = gtk_progress_bar_new();
-        gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(state->usage_progress), FALSE);
+        state->usage_progress = gtk_drawing_area_new();
         if (!width_follows_window && bar_width > 0) {
             gtk_widget_set_size_request(state->usage_progress, bar_width, bar_height);
         } else {
             gtk_widget_set_size_request(state->usage_progress, -1, bar_height);
             gtk_widget_set_hexpand(state->usage_progress, TRUE);
         }
-
-        // Add a dedicated style class so we can reliably control thickness via CSS
-        gtk_style_context_add_class(
-            gtk_widget_get_style_context(state->usage_progress),
-            "quota-progress"
-        );
-
-        // Apply CSS to force height
-        char css[256];
-        // In GTK3, the visible thickness is typically controlled by the internal
-        // 'trough'/'progress' nodes rather than the root 'progressbar' node.
-        snprintf(css, sizeof(css),
-                 "progressbar.quota-progress { min-height: %dpx; } "
-                 "progressbar.quota-progress trough { min-height: %dpx; } "
-                 "progressbar.quota-progress progress { min-height: %dpx; }",
-                 bar_height, bar_height, bar_height);
-        GtkCssProvider* provider = gtk_css_provider_new();
-        gtk_css_provider_load_from_data(provider, css, -1, nullptr);
-        gtk_style_context_add_provider(
-            gtk_widget_get_style_context(state->usage_progress),
-            GTK_STYLE_PROVIDER(provider),
-            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
-        );
-        g_object_unref(provider);
+        g_signal_connect(state->usage_progress, "draw", G_CALLBACK(on_usage_bar_draw), state);
 
         gtk_box_pack_start(GTK_BOX(usage_vbox), state->usage_progress, FALSE, FALSE, 0);
 
@@ -1002,35 +1088,14 @@ static GtkWidget* create_main_window(GUIState* state) {
         gtk_box_pack_start(GTK_BOX(usage_vbox), state->usage_label, FALSE, FALSE, 0);
     } else {
         // No-frame layout (compact mode)
-        state->usage_progress = gtk_progress_bar_new();
-        gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(state->usage_progress), FALSE);
+        state->usage_progress = gtk_drawing_area_new();
         if (!width_follows_window && bar_width > 0) {
             gtk_widget_set_size_request(state->usage_progress, bar_width, bar_height);
         } else {
             gtk_widget_set_size_request(state->usage_progress, -1, bar_height);
             gtk_widget_set_hexpand(state->usage_progress, TRUE);
         }
-
-        gtk_style_context_add_class(
-            gtk_widget_get_style_context(state->usage_progress),
-            "quota-progress"
-        );
-
-        // Apply CSS to force height
-        char css[256];
-        snprintf(css, sizeof(css),
-                 "progressbar.quota-progress { min-height: %dpx; } "
-                 "progressbar.quota-progress trough { min-height: %dpx; } "
-                 "progressbar.quota-progress progress { min-height: %dpx; }",
-                 bar_height, bar_height, bar_height);
-        GtkCssProvider* provider = gtk_css_provider_new();
-        gtk_css_provider_load_from_data(provider, css, -1, nullptr);
-        gtk_style_context_add_provider(
-            gtk_widget_get_style_context(state->usage_progress),
-            GTK_STYLE_PROVIDER(provider),
-            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
-        );
-        g_object_unref(provider);
+        g_signal_connect(state->usage_progress, "draw", G_CALLBACK(on_usage_bar_draw), state);
 
         gtk_box_pack_start(GTK_BOX(vbox), state->usage_progress, FALSE, FALSE, 0);
 
@@ -1305,9 +1370,7 @@ static void show_desktop_notification(const std::string& event, double percentag
 
 // Update GUI widgets with quota data
 static void update_gui_widgets(GUIState* state, const QuotaData* data) {
-    // Update usage progress bar
-    double fraction = data->percentage / 100.0;
-    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(state->usage_progress), fraction);
+    // Usage bar is a custom drawn widget; redraw after updating state below.
 
     // Update usage label with time remaining
     char usage_text[256];
@@ -1331,8 +1394,7 @@ static void update_gui_widgets(GUIState* state, const QuotaData* data) {
     }
     gtk_label_set_text(GTK_LABEL(state->usage_label), usage_text);
 
-    // Apply color coding
-    update_widget_colors(state->usage_progress, data->percentage);
+    // Color coding is handled by the custom bar draw callback.
 
     // Update timestamp (only if exists - not in compact mode)
     if (state->timestamp_label != nullptr) {
@@ -1348,6 +1410,10 @@ static void update_gui_widgets(GUIState* state, const QuotaData* data) {
 
     // Store current data
     state->current_quota = *data;
+
+    if (state->usage_progress) {
+        gtk_widget_queue_draw(state->usage_progress);
+    }
 }
 
 // Update system tray display
@@ -1506,6 +1572,15 @@ static gboolean on_fetch_complete(gpointer user_data) {
         // Update preferred auth method if changed
         if (data->used_method.has_value()) {
             data->state->preferred_auth_method = data->used_method;
+        }
+
+        // Capture previous value so the bar can highlight the increase.
+        if (data->state->current_quota.timestamp > 0) {
+            data->state->prev_percentage = data->state->current_quota.percentage;
+            data->state->have_prev_percentage = true;
+        } else {
+            data->state->prev_percentage = data->quota_data.percentage;
+            data->state->have_prev_percentage = false;
         }
 
         update_gui_widgets(data->state, &data->quota_data);
