@@ -35,6 +35,7 @@ struct GUIState {
     GtkWidget* reset_label;
     GtkWidget* timestamp_label;
     GtkWidget* gauge_drawing_area;
+    GtkWidget* refresh_countdown_label;
 
     // CSS providers
     GtkCssProvider* theme_provider;
@@ -71,6 +72,8 @@ struct GUIState {
 
     // Update Timer
     guint timer_id;
+    guint countdown_timer_id;
+    gint64 next_refresh_us;
 
     // Window State
     int window_x;
@@ -93,7 +96,7 @@ struct GUIState {
     // Constructor with defaults
     GUIState() : window(nullptr), root_container(nullptr), usage_progress(nullptr), reset_progress(nullptr),
                   usage_label(nullptr), reset_label(nullptr), timestamp_label(nullptr),
-                  gauge_drawing_area(nullptr), theme_provider(nullptr),
+                  gauge_drawing_area(nullptr), refresh_countdown_label(nullptr), theme_provider(nullptr),
                   indicator(nullptr), tray_menu(nullptr),
                   refresh_15_item(nullptr), refresh_30_item(nullptr),
                   refresh_60_item(nullptr), refresh_120_item(nullptr),
@@ -101,7 +104,7 @@ struct GUIState {
                   barwidth_1x_item(nullptr), barwidth_2x_item(nullptr),
                   barwidth_3x_item(nullptr), barwidth_4x_item(nullptr),
                   logging_enabled(true), refresh_interval(15), bar_height_multiplier(1),
-                  timer_id(0), window_x(-1), window_y(-1), window_w(-1), window_visible(true),
+                  timer_id(0), countdown_timer_id(0), next_refresh_us(0), window_x(-1), window_y(-1), window_w(-1), window_visible(true),
                   always_on_top(false), window_decorated(true), dark_mode(false),
                   restore_x(-1), restore_y(-1), restore_w(-1),
                   have_restore_pos(false), have_restore_size(false), restoring(false) {
@@ -114,6 +117,26 @@ struct GUIState {
         have_prev_percentage = false;
     }
 };
+
+static void update_refresh_countdown_label(GUIState* state) {
+    if (!state || !state->refresh_countdown_label) return;
+
+    const gint64 now = g_get_monotonic_time();
+    gint64 remaining_us = state->next_refresh_us - now;
+    if (remaining_us < 0) remaining_us = 0;
+    int remaining_s = (int)((remaining_us + 999999) / 1000000);
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%ds", remaining_s);
+    gtk_label_set_text(GTK_LABEL(state->refresh_countdown_label), buf);
+}
+
+static gboolean on_countdown_tick(gpointer user_data) {
+    GUIState* state = (GUIState*)user_data;
+    if (!state) return G_SOURCE_REMOVE;
+    update_refresh_countdown_label(state);
+    return G_SOURCE_CONTINUE;
+}
 
 static double clamp_pct(double v) {
     if (v < 0.0) return 0.0;
@@ -933,6 +956,9 @@ static void change_refresh_rate(GUIState* state, int new_interval) {
         state
     );
 
+    state->next_refresh_us = g_get_monotonic_time() + (gint64)new_interval * 1000000;
+    update_refresh_countdown_label(state);
+
     // Save preference
     save_gui_state(state);
 
@@ -1144,9 +1170,18 @@ static GtkWidget* create_main_window(GUIState* state) {
 
         gtk_box_pack_start(GTK_BOX(usage_vbox), state->usage_progress, FALSE, FALSE, 0);
 
+        GtkWidget* text_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        gtk_box_pack_start(GTK_BOX(usage_vbox), text_row, FALSE, FALSE, 0);
+
         state->usage_label = gtk_label_new("Initializing...");
         gtk_label_set_xalign(GTK_LABEL(state->usage_label), 0.0);
-        gtk_box_pack_start(GTK_BOX(usage_vbox), state->usage_label, FALSE, FALSE, 0);
+        gtk_label_set_ellipsize(GTK_LABEL(state->usage_label), PANGO_ELLIPSIZE_END);
+        gtk_widget_set_hexpand(state->usage_label, TRUE);
+        gtk_box_pack_start(GTK_BOX(text_row), state->usage_label, TRUE, TRUE, 0);
+
+        state->refresh_countdown_label = gtk_label_new("--");
+        gtk_label_set_xalign(GTK_LABEL(state->refresh_countdown_label), 1.0);
+        gtk_box_pack_end(GTK_BOX(text_row), state->refresh_countdown_label, FALSE, FALSE, 0);
     } else {
         // No-frame layout (compact mode)
         state->usage_progress = gtk_drawing_area_new();
@@ -1160,9 +1195,18 @@ static GtkWidget* create_main_window(GUIState* state) {
 
         gtk_box_pack_start(GTK_BOX(vbox), state->usage_progress, FALSE, FALSE, 0);
 
+        GtkWidget* text_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        gtk_box_pack_start(GTK_BOX(vbox), text_row, FALSE, FALSE, 0);
+
         state->usage_label = gtk_label_new("Initializing...");
         gtk_label_set_xalign(GTK_LABEL(state->usage_label), 0.0);
-        gtk_box_pack_start(GTK_BOX(vbox), state->usage_label, FALSE, FALSE, 0);
+        gtk_label_set_ellipsize(GTK_LABEL(state->usage_label), PANGO_ELLIPSIZE_END);
+        gtk_widget_set_hexpand(state->usage_label, TRUE);
+        gtk_box_pack_start(GTK_BOX(text_row), state->usage_label, TRUE, TRUE, 0);
+
+        state->refresh_countdown_label = gtk_label_new("--");
+        gtk_label_set_xalign(GTK_LABEL(state->refresh_countdown_label), 1.0);
+        gtk_box_pack_end(GTK_BOX(text_row), state->refresh_countdown_label, FALSE, FALSE, 0);
     }
 
     // Reset countdown removed - time is now shown in usage label
@@ -1667,6 +1711,10 @@ static gboolean on_fetch_complete(gpointer user_data) {
 static gboolean on_timer_update(gpointer user_data) {
     GUIState* state = (GUIState*)user_data;
 
+    // Track next refresh time for countdown display.
+    state->next_refresh_us = g_get_monotonic_time() + (gint64)state->refresh_interval * 1000000;
+    update_refresh_countdown_label(state);
+
     // Start fetch in background thread
     FetchThreadData* data = new FetchThreadData();
     data->state = state;
@@ -1945,6 +1993,9 @@ int main(int argc, char* argv[]) {
         state
     );
 
+    // Update countdown label once per second.
+    state->countdown_timer_id = g_timeout_add_seconds(1, on_countdown_tick, state);
+
     // Run GTK main loop
     gtk_main();
 
@@ -1952,6 +2003,9 @@ int main(int argc, char* argv[]) {
     save_gui_state(state);
     if (state->timer_id > 0) {
         g_source_remove(state->timer_id);
+    }
+    if (state->countdown_timer_id > 0) {
+        g_source_remove(state->countdown_timer_id);
     }
     notify_uninit();
     delete state;
