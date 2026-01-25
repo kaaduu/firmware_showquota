@@ -140,6 +140,7 @@ The GUI displays a compact, resizable window with:
   - **Show Title Bar**: Toggle window decorations; when disabled you can drag the window from anywhere; double-click the window to toggle
   - **Dark Mode**: Toggle dark/light appearance
   - **Refresh Rate**: 15s / 30s / 60s / 120s
+  - **Refresh Countdown**: Shows time until the next API refresh on the far right of the status line
   - **Progress Bar Height**: Adjust thickness (1x–4x)
   - **Quit**: Exit application completely
 
