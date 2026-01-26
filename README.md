@@ -62,7 +62,7 @@ sudo apt-get install libgtk-3-dev libayatana-appindicator3-dev libnotify-dev
 
 ### MATE Panel Applet (Optional)
 
-If you want the MATE Panel applet integration (`make panel-applet`, "Add to Panel..."), you also need the MATE panel applet development package and `pkg-config`.
+If you want the MATE Panel applet integration (`make -C panel`, "Add to Panel..."), you also need the MATE panel applet development package and `pkg-config`.
 
 Debian/Ubuntu:
 ```bash

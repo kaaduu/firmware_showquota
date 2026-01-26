@@ -8,16 +8,15 @@ die() {
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-APPLET_BIN_SRC="$REPO_DIR/panel/firmware-quota-applet"
+APPLET_BIN_SRC="$SCRIPT_DIR/firmware-quota-applet"
 [ -x "$APPLET_BIN_SRC" ] || die "Build the applet first: ./panel/build.sh"
 
 PREFIX="/usr"
 LIBEXEC_DIR="$PREFIX/libexec/mate-panel"
 APPLET_SHARE_DIR="$PREFIX/share/mate-panel/applets"
 DBUS_SERVICES_DIR="$PREFIX/share/dbus-1/services"
-ICON_DIR="$PREFIX/share/icons/hicolor/48x48/apps"
+ICON_DIR="$PREFIX/share/icons/hicolor/scalable/apps"
 
 APPLET_BIN_DST="$LIBEXEC_DIR/firmware-quota-applet"
 
@@ -34,11 +33,11 @@ tmp_applet="$(mktemp)"
 tmp_service="$(mktemp)"
 
 sed "s|@APPLET_LOCATION@|$APPLET_BIN_DST|g" \
-  "$REPO_DIR/panel/org.firmware.QuotaApplet.mate-panel-applet.in" \
+  "$SCRIPT_DIR/org.firmware.QuotaApplet.mate-panel-applet.in" \
   >"$tmp_applet"
 
 sed "s|@APPLET_LOCATION@|$APPLET_BIN_DST|g" \
-  "$REPO_DIR/panel/org.mate.panel.applet.FirmwareQuotaAppletFactory.service.in" \
+  "$SCRIPT_DIR/org.mate.panel.applet.FirmwareQuotaAppletFactory.service.in" \
   >"$tmp_service"
 
 sudo install -m 0644 "$tmp_applet" "$APPLET_SHARE_DIR/org.firmware.QuotaApplet.mate-panel-applet"
@@ -46,8 +45,8 @@ sudo install -m 0644 "$tmp_service" "$DBUS_SERVICES_DIR/org.mate.panel.applet.Fi
 
 rm -f "$tmp_applet" "$tmp_service"
 
-if [ -f "$REPO_DIR/firmware-icon.png" ]; then
-  sudo install -m 0644 "$REPO_DIR/firmware-icon.png" "$ICON_DIR/firmware-quota.png" || true
+if [ -f "$SCRIPT_DIR/firmware-quota.svg" ]; then
+  sudo install -m 0644 "$SCRIPT_DIR/firmware-quota.svg" "$ICON_DIR/firmware-quota.svg" || true
   if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     sudo gtk-update-icon-cache -q "$PREFIX/share/icons/hicolor" || true
   fi
