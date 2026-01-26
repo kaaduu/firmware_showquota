@@ -12,7 +12,6 @@ need_cmd() {
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 need_cmd make
 need_cmd g++
@@ -38,7 +37,7 @@ EOF
   exit 1
 fi
 
-cd "$REPO_DIR"
-make panel-applet
+cd "$SCRIPT_DIR"
+make
 
-echo "Built: panel/firmware-quota-applet"
+echo "Built: firmware-quota-applet"

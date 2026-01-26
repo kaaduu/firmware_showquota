@@ -11,6 +11,7 @@ Compatibility
 
 Screenshot
   - panel/screenshots/panel-applet.png
+  - panel/screenshots/panel-applet-window-line.png
   - panel/screenshots/panel-applet-delta.png
   - panel/screenshots/panel-applet-5deltas.png
 
@@ -22,7 +23,7 @@ Build Requirements
 Build
   ./panel/build.sh
 
-  (equivalent to: make panel-applet)
+  (equivalent to: make -C panel)
 
 Install Options
 
@@ -35,7 +36,7 @@ Install Options
     - /usr/share/mate-panel/applets/org.firmware.QuotaApplet.mate-panel-applet
     - /usr/share/dbus-1/services/org.mate.panel.applet.FirmwareQuotaAppletFactory.service
     - /usr/libexec/mate-panel/firmware-quota-applet
-    - /usr/share/icons/hicolor/48x48/apps/firmware-quota.png (if firmware-icon.png exists)
+    - /usr/share/icons/hicolor/scalable/apps/firmware-quota.svg
 
   Then restart the panel:
     mate-panel --replace
@@ -73,6 +74,7 @@ Right-Click Menu
       - Reload          (reloads key from environment / env file)
       - Clear Stored Key
     - Refresh Rate (15s / 30s / 60s / 120s)
+    - Window Timer Line (Off / 1px / 2px / 3px / 4px / 6px)
     - Width
       - -10px / +10px / -100px / +100px / Reset (120px)
       - presets: 80/100/120/160/200/300/400/500/600/800/1000/1200/1600px
@@ -91,6 +93,8 @@ API Key Resolution
 Persisted Settings
   - Width is stored per applet instance in: ~/.config/firmware-quota/panel-applet.conf
     The key is the applet prefs-path (e.g. /org/mate/panel/objects/object-6/prefs/)
+  - Window timer line thickness is stored per applet instance in the same file under:
+    <prefs-path>#time_line_px
 
 Troubleshooting
 

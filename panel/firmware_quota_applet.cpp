@@ -1,7 +1,7 @@
 // Firmware Quota MATE Panel Applet
 //
-// Build (from repo root):
-//   make panel-applet
+// Build (from this directory):
+//   make
 
 // Note: compile with `pkg-config --cflags libmatepanelapplet-4.0`.
 #include <mate-panel-applet.h>
@@ -35,7 +35,7 @@
 
 #include <syslog.h>
 
-#include "../quota_common.h"
+#include "quota_common.h"
 
 static constexpr const char* kFactoryId = "FirmwareQuotaAppletFactory";
 static constexpr const char* kAppletId = "FirmwareQuotaApplet";
@@ -45,6 +45,9 @@ static constexpr int kAppletMinWidthPx = 60;
 // Fallback hard cap; real cap is computed from the active monitor size.
 static constexpr int kAppletMaxWidthPxFallback = 1600;
 static constexpr int kAppletWidthStepPx = 10;
+
+static constexpr int kTimeLineDefaultPx = 2;
+static constexpr int kTimeLineMaxPx = 10;
 
 static constexpr const char* kEnvFileRelPath = "/.config/firmware-quota/env";
 
@@ -108,6 +111,8 @@ struct AppletState {
     std::string prefs_path;
     int width_px = kAppletDefaultWidthPx;
     int max_width_px = kAppletMaxWidthPxFallback;
+
+    int time_line_px = kTimeLineDefaultPx;
 
     // Lifetime management: panel may destroy the applet while a background fetch is
     // still running. We keep the state alive until all in-flight fetch callbacks
@@ -199,6 +204,28 @@ static int clamp_width(int w, int max_w) {
     return w;
 }
 
+static int clamp_time_line_px(int px) {
+    if (px < 0) return 0;
+    if (px > kTimeLineMaxPx) return kTimeLineMaxPx;
+    return px;
+}
+
+static int normalize_time_line_px(int px) {
+    // Snap to the discrete menu options so the radio item reflects the current state.
+    static const int allowed[] = {0, 1, 2, 3, 4, 6};
+    px = clamp_time_line_px(px);
+    int best = allowed[0];
+    int best_d = std::abs(px - best);
+    for (int v : allowed) {
+        int d = std::abs(px - v);
+        if (d < best_d) {
+            best = v;
+            best_d = d;
+        }
+    }
+    return best;
+}
+
 static int compute_dynamic_max_width_px(AppletState* state) {
     // We cannot reliably know "free" panel space (other applets can constrain us),
     // but we can cap to the current monitor major axis.
@@ -261,28 +288,28 @@ static void ensure_panel_cfg_dir() {
     g_mkdir_with_parents(dir.c_str(), 0700);
 }
 
-static bool load_width_for_prefs_path(const std::string& prefs_path, int* out_width) {
-    if (!out_width) return false;
-    if (prefs_path.empty()) return false;
+static bool load_int_for_key(const std::string& key, int clamp_hi, int* out_value) {
+    if (!out_value) return false;
+    if (key.empty()) return false;
 
     std::ifstream in(get_panel_cfg_path());
     if (!in.is_open()) return false;
 
-    std::string key;
-    int w = 0;
-    while (in >> key >> w) {
-        if (key == prefs_path) {
-            // Don't clamp here; runtime clamp depends on current monitor size.
-            // Still guard against nonsense values in the config file.
-            *out_width = clamp_width(w, 4096);
+    std::string k;
+    int v = 0;
+    while (in >> k >> v) {
+        if (k == key) {
+            if (v < 0) v = 0;
+            if (v > clamp_hi) v = clamp_hi;
+            *out_value = v;
             return true;
         }
     }
     return false;
 }
 
-static void save_width_for_prefs_path(const std::string& prefs_path, int width) {
-    if (prefs_path.empty()) return;
+static void save_int_for_key(const std::string& key, int value, int clamp_hi) {
+    if (key.empty()) return;
     ensure_panel_cfg_dir();
 
     const std::string path = get_panel_cfg_path();
@@ -291,26 +318,30 @@ static void save_width_for_prefs_path(const std::string& prefs_path, int width) 
     {
         std::ifstream in(path);
         if (in.is_open()) {
-            std::string key;
-            int w = 0;
-            while (in >> key >> w) {
-                if (!key.empty()) {
-                    entries.emplace_back(key, clamp_width(w, 4096));
+            std::string k;
+            int v = 0;
+            while (in >> k >> v) {
+                if (!k.empty()) {
+                    if (v < 0) v = 0;
+                    entries.emplace_back(k, v);
                 }
             }
         }
     }
 
+    if (value < 0) value = 0;
+    if (value > clamp_hi) value = clamp_hi;
+
     bool updated = false;
     for (auto& kv : entries) {
-        if (kv.first == prefs_path) {
-            kv.second = clamp_width(width, 4096);
+        if (kv.first == key) {
+            kv.second = value;
             updated = true;
             break;
         }
     }
     if (!updated) {
-        entries.emplace_back(prefs_path, clamp_width(width, 4096));
+        entries.emplace_back(key, value);
     }
 
     const std::string tmp = path + ".tmp";
@@ -322,6 +353,41 @@ static void save_width_for_prefs_path(const std::string& prefs_path, int width) 
         }
     }
     (void)rename(tmp.c_str(), path.c_str());
+}
+
+static bool load_width_for_prefs_path(const std::string& prefs_path, int* out_width) {
+    if (!out_width) return false;
+    if (prefs_path.empty()) return false;
+
+    // Don't clamp here; runtime clamp depends on current monitor size.
+    // Still guard against nonsense values in the config file.
+    int v = 0;
+    if (!load_int_for_key(prefs_path, 4096, &v)) return false;
+    *out_width = clamp_width(v, 4096);
+    return true;
+}
+
+static void save_width_for_prefs_path(const std::string& prefs_path, int width) {
+    if (prefs_path.empty()) return;
+    save_int_for_key(prefs_path, clamp_width(width, 4096), 4096);
+}
+
+static std::string time_line_key_for_prefs_path(const std::string& prefs_path) {
+    return prefs_path + "#time_line_px";
+}
+
+static bool load_time_line_px_for_prefs_path(const std::string& prefs_path, int* out_px) {
+    if (!out_px) return false;
+    if (prefs_path.empty()) return false;
+    int v = 0;
+    if (!load_int_for_key(time_line_key_for_prefs_path(prefs_path), kTimeLineMaxPx, &v)) return false;
+    *out_px = normalize_time_line_px(v);
+    return true;
+}
+
+static void save_time_line_px_for_prefs_path(const std::string& prefs_path, int px) {
+    if (prefs_path.empty()) return;
+    save_int_for_key(time_line_key_for_prefs_path(prefs_path), normalize_time_line_px(px), kTimeLineMaxPx);
 }
 
 static bool read_key_from_env_file(std::string* out_key) {
@@ -571,6 +637,9 @@ static gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
     std::string err;
     bool have = false;
     bool have_good = false;
+    std::string reset_time;
+    time_t last_window_reset_ts = 0;
+    int time_line_px = 0;
     {
         std::lock_guard<std::mutex> lock(state->mu);
         have_good = state->have_last_good;
@@ -578,6 +647,9 @@ static gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
         const QuotaData q = have_good ? state->last_good_quota : state->current_quota;
         pct = clamp_pct(q.percentage);
         err = state->last_error;
+        reset_time = q.reset_time;
+        last_window_reset_ts = state->last_window_reset_ts;
+        time_line_px = state->time_line_px;
     }
 
     const bool stale = (!err.empty()) && have_good;
@@ -731,6 +803,62 @@ static gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
             cairo_line_to(cr, x + h, h);
         }
         cairo_stroke(cr);
+    }
+
+    // 5h window remaining time line (bottom edge), independent from usage.
+    // Uses server-provided reset_time when available; falls back to:
+    //   - local reset detection timestamp (best effort), then
+    //   - an epoch-aligned 5h window (always available).
+    {
+        const int px = clamp_time_line_px(time_line_px);
+        if (px > 0) {
+            int64_t remaining_s = -1;
+            if (!reset_time.empty() && reset_time != "N/A") {
+                time_t reset_utc = 0;
+                if (parse_iso8601_utc_to_time_t(reset_time, &reset_utc)) {
+                    int64_t until_reset = (int64_t)difftime(reset_utc, time(nullptr));
+                    if (until_reset < 0) until_reset = 0;
+                    if (until_reset > kQuotaWindowSeconds) until_reset = kQuotaWindowSeconds;
+                    remaining_s = until_reset;
+                }
+            }
+            if (remaining_s < 0 && last_window_reset_ts != 0) {
+                int64_t age_s = (int64_t)difftime(time(nullptr), last_window_reset_ts);
+                if (age_s < 0) age_s = 0;
+                int64_t until_reset = (int64_t)kQuotaWindowSeconds - age_s;
+                if (until_reset < 0) until_reset = 0;
+                if (until_reset > kQuotaWindowSeconds) until_reset = kQuotaWindowSeconds;
+                remaining_s = until_reset;
+            }
+
+            // Last-resort fallback: epoch-aligned 5h window so we always have a countdown.
+            if (remaining_s < 0) {
+                const time_t now_s = time(nullptr);
+                const time_t window_start = (now_s / (time_t)kQuotaWindowSeconds) * (time_t)kQuotaWindowSeconds;
+                int64_t age_s = (int64_t)difftime(now_s, window_start);
+                if (age_s < 0) age_s = 0;
+                int64_t until_reset = (int64_t)kQuotaWindowSeconds - age_s;
+                if (until_reset < 0) until_reset = 0;
+                if (until_reset > kQuotaWindowSeconds) until_reset = kQuotaWindowSeconds;
+                remaining_s = until_reset;
+            }
+
+            if (remaining_s >= 0) {
+                // If the remaining time is *very* close to the full 5h window, the most
+                // likely case is that we don't have a server reset_time yet. In that case
+                // don't draw the line (prevents drawing a full-width red bar all the time).
+                if (remaining_s > (int64_t)kQuotaWindowSeconds - 5) {
+                    // Leave it hidden until we have a meaningful countdown.
+                } else {
+                const double frac = (double)remaining_s / (double)kQuotaWindowSeconds;
+                const double len = std::max(0.0, std::min(1.0, frac)) * (double)w;
+                const int y0 = std::max(0, h - px);
+                cairo_set_source_rgba(cr, 0.95, 0.10, 0.10, 0.95);
+                cairo_rectangle(cr, 0, y0, len, std::min(px, h));
+                cairo_fill(cr);
+                }
+            }
+        }
     }
 
     // Border.
@@ -982,6 +1110,9 @@ static gboolean on_ui_tick(gpointer user_data) {
     if (!state) return G_SOURCE_REMOVE;
     if (state->destroy_requested.load(std::memory_order_relaxed)) return G_SOURCE_REMOVE;
     set_tooltip(state);
+    if (state->drawing) {
+        gtk_widget_queue_draw(state->drawing);
+    }
     return G_SOURCE_CONTINUE;
 }
 
@@ -1056,6 +1187,31 @@ static void on_action_width_reset(GtkAction*, gpointer user_data) {
     AppletState* state = (AppletState*)user_data;
     if (!state) return;
     apply_width(state, kAppletDefaultWidthPx);
+}
+
+static void apply_time_line_px(AppletState* state, int px) {
+    if (!state) return;
+    if (state->destroy_requested.load(std::memory_order_relaxed)) return;
+
+    const int v = normalize_time_line_px(px);
+    {
+        std::lock_guard<std::mutex> lock(state->mu);
+        state->time_line_px = v;
+    }
+
+    save_time_line_px_for_prefs_path(state->prefs_path, v);
+    if (state->drawing) {
+        gtk_widget_queue_draw(state->drawing);
+    }
+}
+
+static void on_action_time_line(GtkAction* action, GtkRadioAction* current, gpointer user_data) {
+    (void)action;
+    AppletState* state = (AppletState*)user_data;
+    if (!state) return;
+
+    const int px = gtk_radio_action_get_current_value(current);
+    apply_time_line_px(state, px);
 }
 
 static void on_action_api_key_set(GtkAction*, gpointer user_data) {
@@ -1262,6 +1418,17 @@ static void setup_panel_menu(AppletState* state) {
     };
     gtk_action_group_add_radio_actions(group, width_entries, 13, state->width_px, G_CALLBACK(on_action_width), state);
 
+    // Window time line thickness (px)
+    GtkRadioActionEntry time_line_entries[] = {
+        {"FirmwareQuotaTimeLine0", nullptr, "Off", nullptr, "Hide window countdown line", 0},
+        {"FirmwareQuotaTimeLine1", nullptr, "1px", nullptr, "Window countdown line 1px", 1},
+        {"FirmwareQuotaTimeLine2", nullptr, "2px", nullptr, "Window countdown line 2px", 2},
+        {"FirmwareQuotaTimeLine3", nullptr, "3px", nullptr, "Window countdown line 3px", 3},
+        {"FirmwareQuotaTimeLine4", nullptr, "4px", nullptr, "Window countdown line 4px", 4},
+        {"FirmwareQuotaTimeLine6", nullptr, "6px", nullptr, "Window countdown line 6px", 6},
+    };
+    gtk_action_group_add_radio_actions(group, time_line_entries, 6, normalize_time_line_px(state->time_line_px), G_CALLBACK(on_action_time_line), state);
+
     // IMPORTANT: mate_panel_applet_setup_menu() internally wraps the provided XML into
     // its own <ui><popup name="MatePanelAppletPopup">... placeholder ...</popup></ui>.
     // Provide ONLY the fragment that should be inserted into the AppletItems placeholder.
@@ -1278,6 +1445,14 @@ static void setup_panel_menu(AppletState* state) {
         "  <menuitem action='FirmwareQuotaRate30'/>"
         "  <menuitem action='FirmwareQuotaRate60'/>"
         "  <menuitem action='FirmwareQuotaRate120'/>"
+        "</menu>"
+        "<menu action='FirmwareQuotaTimeLineMenu'>"
+        "  <menuitem action='FirmwareQuotaTimeLine0'/>"
+        "  <menuitem action='FirmwareQuotaTimeLine1'/>"
+        "  <menuitem action='FirmwareQuotaTimeLine2'/>"
+        "  <menuitem action='FirmwareQuotaTimeLine3'/>"
+        "  <menuitem action='FirmwareQuotaTimeLine4'/>"
+        "  <menuitem action='FirmwareQuotaTimeLine6'/>"
         "</menu>"
         "<menu action='FirmwareQuotaWidthMenu'>"
         "  <menuitem action='FirmwareQuotaWidthDec'/>"
@@ -1308,8 +1483,9 @@ static void setup_panel_menu(AppletState* state) {
         {"FirmwareQuotaRateMenu", nullptr, "Refresh Rate", nullptr, nullptr, nullptr},
         {"FirmwareQuotaWidthMenu", nullptr, "Width", nullptr, nullptr, nullptr},
         {"FirmwareQuotaApiMenu", nullptr, "API Key", nullptr, nullptr, nullptr},
+        {"FirmwareQuotaTimeLineMenu", nullptr, "Window Timer Line", nullptr, nullptr, nullptr},
     };
-    gtk_action_group_add_actions(group, menu_entries, 3, state);
+    gtk_action_group_add_actions(group, menu_entries, 4, state);
 
     mate_panel_applet_setup_menu(state->applet, xml, group);
 
@@ -1401,6 +1577,13 @@ static gboolean applet_fill(MatePanelApplet* applet, const gchar* iid, gpointer)
         if (load_width_for_prefs_path(state->prefs_path, &stored_w)) {
             state->max_width_px = compute_dynamic_max_width_px(state);
             state->width_px = clamp_width(stored_w, state->max_width_px);
+        }
+
+        int stored_tl = 0;
+        if (load_time_line_px_for_prefs_path(state->prefs_path, &stored_tl)) {
+            state->time_line_px = normalize_time_line_px(stored_tl);
+        } else {
+            state->time_line_px = kTimeLineDefaultPx;
         }
         apply_width(state, state->width_px);
 

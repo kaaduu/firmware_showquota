@@ -6,3 +6,5 @@ panel/firmware-quota-applet
 *.backup
 .firmware_quota_gui.conf
 firmware-icon.png
+
+dist/
