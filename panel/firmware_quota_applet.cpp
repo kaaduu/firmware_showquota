@@ -42,7 +42,8 @@ static constexpr const char* kAppletId = "FirmwareQuotaApplet";
 
 static constexpr int kAppletDefaultWidthPx = 120;
 static constexpr int kAppletMinWidthPx = 60;
-static constexpr int kAppletMaxWidthPx = 600;
+// Fallback hard cap; real cap is computed from the active monitor size.
+static constexpr int kAppletMaxWidthPxFallback = 1600;
 static constexpr int kAppletWidthStepPx = 10;
 
 static constexpr const char* kEnvFileRelPath = "/.config/firmware-quota/env";
@@ -106,6 +107,7 @@ struct AppletState {
 
     std::string prefs_path;
     int width_px = kAppletDefaultWidthPx;
+    int max_width_px = kAppletMaxWidthPxFallback;
 
     // Lifetime management: panel may destroy the applet while a background fetch is
     // still running. We keep the state alive until all in-flight fetch callbacks
@@ -190,10 +192,58 @@ static double clamp_pct(double v) {
     return v;
 }
 
-static int clamp_width(int w) {
+static int clamp_width(int w, int max_w) {
     if (w < kAppletMinWidthPx) return kAppletMinWidthPx;
-    if (w > kAppletMaxWidthPx) return kAppletMaxWidthPx;
+    if (max_w < kAppletMinWidthPx) max_w = kAppletMinWidthPx;
+    if (w > max_w) return max_w;
     return w;
+}
+
+static int compute_dynamic_max_width_px(AppletState* state) {
+    // We cannot reliably know "free" panel space (other applets can constrain us),
+    // but we can cap to the current monitor major axis.
+    if (!state || !state->applet) return kAppletMaxWidthPxFallback;
+
+    MatePanelAppletOrient orient = mate_panel_applet_get_orient(state->applet);
+
+    GtkWidget* widget = GTK_WIDGET(state->applet);
+    GdkWindow* win = gtk_widget_get_window(widget);
+    if (!win && state->drawing) {
+        win = gtk_widget_get_window(state->drawing);
+    }
+
+    int major_px = 0;
+    if (win) {
+        GdkDisplay* display = gdk_window_get_display(win);
+        if (display) {
+            GdkMonitor* mon = gdk_display_get_monitor_at_window(display, win);
+            if (mon) {
+                GdkRectangle geo{};
+                gdk_monitor_get_geometry(mon, &geo);
+                major_px = (orient == MATE_PANEL_APPLET_ORIENT_LEFT || orient == MATE_PANEL_APPLET_ORIENT_RIGHT)
+                               ? geo.height
+                               : geo.width;
+            }
+        }
+    }
+
+    if (major_px <= 0) {
+        GdkScreen* screen = gtk_widget_get_screen(widget);
+        if (!screen) return kAppletMaxWidthPxFallback;
+        major_px = (orient == MATE_PANEL_APPLET_ORIENT_LEFT || orient == MATE_PANEL_APPLET_ORIENT_RIGHT)
+                       ? gdk_screen_get_height(screen)
+                       : gdk_screen_get_width(screen);
+    }
+
+    // Leave margin so we don't request the full panel length.
+    int max_w = major_px - 20;
+    if (max_w < kAppletMinWidthPx) max_w = kAppletMinWidthPx;
+
+    // Safety cap: keeps the hint array bounded on very wide screens.
+    const int safety_cap = 4096;
+    if (max_w > safety_cap) max_w = safety_cap;
+
+    return max_w;
 }
 
 static std::string get_panel_cfg_path() {
@@ -222,7 +272,9 @@ static bool load_width_for_prefs_path(const std::string& prefs_path, int* out_wi
     int w = 0;
     while (in >> key >> w) {
         if (key == prefs_path) {
-            *out_width = clamp_width(w);
+            // Don't clamp here; runtime clamp depends on current monitor size.
+            // Still guard against nonsense values in the config file.
+            *out_width = clamp_width(w, 4096);
             return true;
         }
     }
@@ -243,7 +295,7 @@ static void save_width_for_prefs_path(const std::string& prefs_path, int width) 
             int w = 0;
             while (in >> key >> w) {
                 if (!key.empty()) {
-                    entries.emplace_back(key, clamp_width(w));
+                    entries.emplace_back(key, clamp_width(w, 4096));
                 }
             }
         }
@@ -252,13 +304,13 @@ static void save_width_for_prefs_path(const std::string& prefs_path, int width) 
     bool updated = false;
     for (auto& kv : entries) {
         if (kv.first == prefs_path) {
-            kv.second = clamp_width(width);
+            kv.second = clamp_width(width, 4096);
             updated = true;
             break;
         }
     }
     if (!updated) {
-        entries.emplace_back(prefs_path, clamp_width(width));
+        entries.emplace_back(prefs_path, clamp_width(width, 4096));
     }
 
     const std::string tmp = path + ".tmp";
@@ -988,6 +1040,18 @@ static void on_action_width_increase(GtkAction*, gpointer user_data) {
     apply_width(state, state->width_px + kAppletWidthStepPx);
 }
 
+static void on_action_width_decrease_100(GtkAction*, gpointer user_data) {
+    AppletState* state = (AppletState*)user_data;
+    if (!state) return;
+    apply_width(state, state->width_px - 100);
+}
+
+static void on_action_width_increase_100(GtkAction*, gpointer user_data) {
+    AppletState* state = (AppletState*)user_data;
+    if (!state) return;
+    apply_width(state, state->width_px + 100);
+}
+
 static void on_action_width_reset(GtkAction*, gpointer user_data) {
     AppletState* state = (AppletState*)user_data;
     if (!state) return;
@@ -1124,17 +1188,26 @@ static void apply_width(AppletState* state, int width_px);
 static void apply_width(AppletState* state, int width_px) {
     if (!state || !state->applet || !state->drawing) return;
     if (state->destroy_requested.load(std::memory_order_relaxed)) return;
-    state->width_px = clamp_width(width_px);
+
+    state->max_width_px = compute_dynamic_max_width_px(state);
+    state->width_px = clamp_width(width_px, state->max_width_px);
 
     const int w = state->width_px;
-    const int hints[] = {
-        std::max(kAppletMinWidthPx, w - 40),
-        std::max(kAppletMinWidthPx, w - 20),
-        w,
-        std::min(kAppletMaxWidthPx, w + 20),
-        std::min(kAppletMaxWidthPx, w + 40),
-    };
-    mate_panel_applet_set_size_hints(state->applet, hints, (int)(sizeof(hints) / sizeof(hints[0])), 0);
+
+    // Provide a full range of accepted major-axis sizes.
+    // Some panel layouts cannot satisfy a large jump (e.g. +100px). If we only
+    // advertise hints near the target width, mate-panel may keep the current size.
+    // A full range lets it pick the best fit.
+    std::vector<int> hints;
+    hints.reserve((state->max_width_px - kAppletMinWidthPx) / kAppletWidthStepPx + 1);
+    for (int v = kAppletMinWidthPx; v <= state->max_width_px; v += kAppletWidthStepPx) {
+        hints.push_back(v);
+    }
+    // Ensure the exact requested width is included even if constants change.
+    if (w % kAppletWidthStepPx != 0) {
+        hints.push_back(w);
+    }
+    mate_panel_applet_set_size_hints(state->applet, hints.data(), (int)hints.size(), 0);
 
     guint size = mate_panel_applet_get_size(state->applet);
     if (size == 0) size = 24;
@@ -1153,12 +1226,14 @@ static void setup_panel_menu(AppletState* state) {
         {"FirmwareQuotaRefreshNow", nullptr, "Refresh Now", nullptr, "Refresh immediately", G_CALLBACK(on_action_refresh_now)},
         {"FirmwareQuotaWidthDec", nullptr, "-10px", nullptr, "Decrease width", G_CALLBACK(on_action_width_decrease)},
         {"FirmwareQuotaWidthInc", nullptr, "+10px", nullptr, "Increase width", G_CALLBACK(on_action_width_increase)},
+        {"FirmwareQuotaWidthDec100", nullptr, "-100px", nullptr, "Decrease width by 100px", G_CALLBACK(on_action_width_decrease_100)},
+        {"FirmwareQuotaWidthInc100", nullptr, "+100px", nullptr, "Increase width by 100px", G_CALLBACK(on_action_width_increase_100)},
         {"FirmwareQuotaWidthReset", nullptr, "Reset (120px)", nullptr, "Reset width", G_CALLBACK(on_action_width_reset)},
         {"FirmwareQuotaApiSet", nullptr, "Set...", nullptr, "Store API key", G_CALLBACK(on_action_api_key_set)},
         {"FirmwareQuotaApiReload", nullptr, "Reload", nullptr, "Reload API key", G_CALLBACK(on_action_api_key_reload)},
         {"FirmwareQuotaApiClear", nullptr, "Clear Stored Key", nullptr, "Remove stored key", G_CALLBACK(on_action_api_key_clear)},
     };
-    gtk_action_group_add_actions(group, refresh_entries, 7, state);
+    gtk_action_group_add_actions(group, refresh_entries, 9, state);
 
     // Refresh rate radio group
     GtkRadioActionEntry rate_entries[] = {
@@ -1180,8 +1255,12 @@ static void setup_panel_menu(AppletState* state) {
         {"FirmwareQuotaWidth400", nullptr, "400px", nullptr, "Applet width 400px", 400},
         {"FirmwareQuotaWidth500", nullptr, "500px", nullptr, "Applet width 500px", 500},
         {"FirmwareQuotaWidth600", nullptr, "600px", nullptr, "Applet width 600px", 600},
+        {"FirmwareQuotaWidth800", nullptr, "800px", nullptr, "Applet width 800px", 800},
+        {"FirmwareQuotaWidth1000", nullptr, "1000px", nullptr, "Applet width 1000px", 1000},
+        {"FirmwareQuotaWidth1200", nullptr, "1200px", nullptr, "Applet width 1200px", 1200},
+        {"FirmwareQuotaWidth1600", nullptr, "1600px", nullptr, "Applet width 1600px", 1600},
     };
-    gtk_action_group_add_radio_actions(group, width_entries, 9, state->width_px, G_CALLBACK(on_action_width), state);
+    gtk_action_group_add_radio_actions(group, width_entries, 13, state->width_px, G_CALLBACK(on_action_width), state);
 
     // IMPORTANT: mate_panel_applet_setup_menu() internally wraps the provided XML into
     // its own <ui><popup name="MatePanelAppletPopup">... placeholder ...</popup></ui>.
@@ -1203,6 +1282,8 @@ static void setup_panel_menu(AppletState* state) {
         "<menu action='FirmwareQuotaWidthMenu'>"
         "  <menuitem action='FirmwareQuotaWidthDec'/>"
         "  <menuitem action='FirmwareQuotaWidthInc'/>"
+        "  <menuitem action='FirmwareQuotaWidthDec100'/>"
+        "  <menuitem action='FirmwareQuotaWidthInc100'/>"
         "  <menuitem action='FirmwareQuotaWidthReset'/>"
         "  <separator/>"
         "  <menuitem action='FirmwareQuotaWidth80'/>"
@@ -1215,6 +1296,11 @@ static void setup_panel_menu(AppletState* state) {
         "  <menuitem action='FirmwareQuotaWidth400'/>"
         "  <menuitem action='FirmwareQuotaWidth500'/>"
         "  <menuitem action='FirmwareQuotaWidth600'/>"
+        "  <separator/>"
+        "  <menuitem action='FirmwareQuotaWidth800'/>"
+        "  <menuitem action='FirmwareQuotaWidth1000'/>"
+        "  <menuitem action='FirmwareQuotaWidth1200'/>"
+        "  <menuitem action='FirmwareQuotaWidth1600'/>"
         "</menu>";
 
     // Add submenu actions as regular GtkAction so the UI manager can label them.
@@ -1313,7 +1399,8 @@ static gboolean applet_fill(MatePanelApplet* applet, const gchar* iid, gpointer)
         // Load per-instance width (default 120px).
         int stored_w = 0;
         if (load_width_for_prefs_path(state->prefs_path, &stored_w)) {
-            state->width_px = clamp_width(stored_w);
+            state->max_width_px = compute_dynamic_max_width_px(state);
+            state->width_px = clamp_width(stored_w, state->max_width_px);
         }
         apply_width(state, state->width_px);
 

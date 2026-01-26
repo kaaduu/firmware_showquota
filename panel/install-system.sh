@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 APPLET_BIN_SRC="$REPO_DIR/panel/firmware-quota-applet"
-[ -x "$APPLET_BIN_SRC" ] || die "Build the applet first: make panel-applet"
+[ -x "$APPLET_BIN_SRC" ] || die "Build the applet first: ./panel/build.sh"
 
 PREFIX="/usr"
 LIBEXEC_DIR="$PREFIX/libexec/mate-panel"

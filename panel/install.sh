@@ -14,7 +14,7 @@ HOME_DIR="${HOME:?HOME is not set}"
 
 APPLET_BIN_SRC="$REPO_DIR/panel/firmware-quota-applet"
 
-[ -x "$APPLET_BIN_SRC" ] || die "Build the applet first: make panel-applet"
+[ -x "$APPLET_BIN_SRC" ] || die "Build the applet first: ./panel/build.sh"
 
 LIBEXEC_DIR="$HOME_DIR/.local/libexec/mate-panel"
 APPLET_SHARE_DIR="$HOME_DIR/.local/share/mate-panel/applets"
