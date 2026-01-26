@@ -60,6 +60,17 @@ Install GUI dependencies on Debian/Ubuntu:
 sudo apt-get install libgtk-3-dev libayatana-appindicator3-dev libnotify-dev
 ```
 
+### MATE Panel Applet (Optional)
+
+If you want the MATE Panel applet integration (`make panel-applet`, "Add to Panel..."), you also need the MATE panel applet development package and `pkg-config`.
+
+Debian/Ubuntu:
+```bash
+sudo apt-get install pkg-config libmate-panel-applet-dev
+```
+
+See `panel/README.md` for full applet build/install instructions and troubleshooting.
+
 ## Build
 
 The Makefile supports building three versions:

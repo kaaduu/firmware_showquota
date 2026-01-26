@@ -20,7 +20,9 @@ Build Requirements
   - libcurl (already required by the main project)
 
 Build
-  make panel-applet
+  ./panel/build.sh
+
+  (equivalent to: make panel-applet)
 
 Install Options
 
@@ -72,8 +74,8 @@ Right-Click Menu
       - Clear Stored Key
     - Refresh Rate (15s / 30s / 60s / 120s)
     - Width
-      - -10px / +10px / Reset (120px)
-      - presets: 80/100/120/160/200/300/400/500/600px
+      - -10px / +10px / -100px / +100px / Reset (120px)
+      - presets: 80/100/120/160/200/300/400/500/600/800/1000/1200/1600px
 
 API Key Resolution
   The applet needs an API key to query the quota endpoint.
