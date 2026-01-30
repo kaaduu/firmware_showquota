@@ -64,6 +64,17 @@ Usage
   - The overlay text shows a tiny percent (or "--" while initializing, or "ERR" on error).
   - Hovering shows a tooltip with usage, reset time, and next refresh countdown.
 
+Visual Color Scheme
+
+  The main progress bar changes color based on quota usage level:
+    - Green (< 50% usage): RGB(0.20, 0.78, 0.30) - healthy/low usage
+    - Yellow (50-80% usage): RGB(0.95, 0.75, 0.20) - moderate usage, dark text
+    - Red (≥ 80% usage): RGB(0.91, 0.28, 0.38) - high/critical usage
+
+  The window timer line (bottom countdown bar) color:
+    - White when main bar is green (< 50% usage)
+    - Cyan when main bar is yellow or red (≥ 50% usage)
+
 Right-Click Menu
   The applet integrates into the standard MATE applet menu (so you also get Move/Remove/Lock).
 
