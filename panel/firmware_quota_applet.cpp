@@ -856,7 +856,12 @@ static gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
                 const double frac = (double)remaining_s / (double)kQuotaWindowSeconds;
                 const double len = std::max(0.0, std::min(1.0, frac)) * (double)w;
                 const int y0 = std::max(0, h - px);
-                cairo_set_source_rgba(cr, 0.0, 0.75, 1.0, 0.95);
+                // Use white color when main progress bar is green (pct < 50%), otherwise cyan
+                if (pct < 50.0) {
+                    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.95);
+                } else {
+                    cairo_set_source_rgba(cr, 0.0, 0.75, 1.0, 0.95);
+                }
                 cairo_rectangle(cr, 0, y0, len, std::min(px, h));
                 cairo_fill(cr);
                 }
