@@ -591,14 +591,17 @@ static void set_tooltip(AppletState* state) {
     gtk_widget_set_tooltip_text(state->drawing, tip);
 }
 
-static void pick_color(double pct, double* r, double* g, double* b) {
-    // Match existing thresholds.
+static void pick_color_with_text(double pct, double* r, double* g, double* b,
+                                  double* tr, double* tg, double* tb) {
     if (pct < 50.0) {
         *r = 0.20; *g = 0.78; *b = 0.30;
+        *tr = 1.0; *tg = 1.0; *tb = 1.0;
     } else if (pct < 80.0) {
         *r = 0.95; *g = 0.75; *b = 0.20;
+        *tr = 0.13; *tg = 0.13; *tb = 0.13;
     } else {
         *r = 0.91; *g = 0.28; *b = 0.38;
+        *tr = 1.0; *tg = 1.0; *tb = 1.0;
     }
 }
 
@@ -659,10 +662,10 @@ static gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
     cairo_rectangle(cr, 0, 0, w, h);
     cairo_fill(cr);
 
-    // Fill.
     double fr = 0.6, fg = 0.6, fb = 0.6;
+    double tr = 1.0, tg = 1.0, tb = 1.0;
     if (have) {
-        pick_color(pct, &fr, &fg, &fb);
+        pick_color_with_text(pct, &fr, &fg, &fb, &tr, &tg, &tb);
     }
     const double fill_frac = have ? (pct / 100.0) : 0.0;
 
@@ -853,7 +856,7 @@ static gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
                 const double frac = (double)remaining_s / (double)kQuotaWindowSeconds;
                 const double len = std::max(0.0, std::min(1.0, frac)) * (double)w;
                 const int y0 = std::max(0, h - px);
-                cairo_set_source_rgba(cr, 0.95, 0.10, 0.10, 0.95);
+                cairo_set_source_rgba(cr, 0.0, 0.75, 1.0, 0.95);
                 cairo_rectangle(cr, 0, y0, len, std::min(px, h));
                 cairo_fill(cr);
                 }
@@ -894,13 +897,15 @@ static gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
     const double tx = (w - ext.width) / 2.0 - ext.x_bearing;
     const double ty = (h - ext.height) / 2.0 - ext.y_bearing;
 
-    // Shadow
-    cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
+    if (tr > 0.5) {
+        cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.55);
+    } else {
+        cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.55);
+    }
     cairo_move_to(cr, tx + 1.0, ty + 1.0);
     cairo_show_text(cr, text);
 
-    // Foreground
-    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.92);
+    cairo_set_source_rgba(cr, tr, tg, tb, 0.95);
     cairo_move_to(cr, tx, ty);
     cairo_show_text(cr, text);
 
@@ -1476,7 +1481,9 @@ static void setup_panel_menu(AppletState* state) {
         "  <menuitem action='FirmwareQuotaWidth1000'/>"
         "  <menuitem action='FirmwareQuotaWidth1200'/>"
         "  <menuitem action='FirmwareQuotaWidth1600'/>"
-        "</menu>";
+        "</menu>"
+        "<separator/>"
+        "<menuitem action='FirmwareQuotaVersion'/>";
 
     // Add submenu actions as regular GtkAction so the UI manager can label them.
     GtkActionEntry menu_entries[] = {
@@ -1486,6 +1493,16 @@ static void setup_panel_menu(AppletState* state) {
         {"FirmwareQuotaTimeLineMenu", nullptr, "Window Timer Line", nullptr, nullptr, nullptr},
     };
     gtk_action_group_add_actions(group, menu_entries, 4, state);
+
+    // Add version info with compilation date (disabled/non-clickable)
+    GtkActionEntry version_entry[] = {
+        {"FirmwareQuotaVersion", nullptr, "Version: " __DATE__, nullptr, "Build date", nullptr},
+    };
+    gtk_action_group_add_actions(group, version_entry, 1, state);
+    GtkAction* version_action = gtk_action_group_get_action(group, "FirmwareQuotaVersion");
+    if (version_action) {
+        gtk_action_set_sensitive(version_action, FALSE);
+    }
 
     mate_panel_applet_setup_menu(state->applet, xml, group);
 
