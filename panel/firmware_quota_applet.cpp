@@ -521,11 +521,11 @@ static void set_tooltip(AppletState* state) {
             snprintf(last_ok_buf, sizeof(last_ok_buf), "Last OK: --");
         }
 
-        // Reset display if available.
+        // Window reset display if available.
         std::string reset_line = "Reset: N/A";
-        if (q.reset_time != "N/A" && !q.reset_time.empty()) {
+        if (q.window_reset != "N/A" && !q.window_reset.empty()) {
             time_t reset_utc;
-            if (parse_iso8601_utc_to_time_t(q.reset_time, &reset_utc)) {
+            if (parse_iso8601_utc_to_time_t(q.window_reset, &reset_utc)) {
                 time_t now_s = time(nullptr);
                 int64_t until_reset = static_cast<int64_t>(difftime(reset_utc, now_s));
                 if (until_reset < 0) until_reset = 0;
@@ -534,6 +534,35 @@ static void set_tooltip(AppletState* state) {
         }
 
         extra = std::string(delta_buf) + "\n" + last_ok_buf + "\n" + reset_line;
+
+        // Weekly usage + weekly reset (tooltip only)
+        {
+            char weekly_buf[256];
+            snprintf(weekly_buf, sizeof(weekly_buf), "Weekly: %.1f%%", q.weekly_used * 100.0);
+            extra += "\n";
+            extra += weekly_buf;
+
+            if (q.weekly_reset != "N/A" && !q.weekly_reset.empty()) {
+                time_t weekly_reset_utc;
+                if (parse_iso8601_utc_to_time_t(q.weekly_reset, &weekly_reset_utc)) {
+                    time_t now_s = time(nullptr);
+                    int64_t until_weekly = static_cast<int64_t>(difftime(weekly_reset_utc, now_s));
+                    if (until_weekly < 0) until_weekly = 0;
+
+                    // Show remaining days (rounded down).
+                    const int64_t days = until_weekly / (int64_t)(24 * 60 * 60);
+                    snprintf(weekly_buf, sizeof(weekly_buf), " (remaining days: %lld)", (long long)days);
+                    extra += weekly_buf;
+                }
+            }
+        }
+
+        // Manual resets remaining
+        {
+            char b[64];
+            snprintf(b, sizeof(b), "\nManual resets: %d/2", q.window_resets_remaining);
+            extra += b;
+        }
 
         if (state->delta_hist_count > 0) {
             std::string hist = "Recent deltas (old->new): ";
@@ -583,7 +612,7 @@ static void set_tooltip(AppletState* state) {
         snprintf(tip, sizeof(tip),
                  "Firmware Quota (panel)\nStatus: %s\nUsage: %.1f%%\n%s\nNext refresh: %ds",
                  status.c_str(),
-                 q.percentage,
+                 q.window_percentage,
                  extra.c_str(),
                  remaining_s);
     }
@@ -605,13 +634,13 @@ static void pick_color_with_text(double pct, double* r, double* g, double* b,
     }
 }
 
-static bool compute_window_start_utc(const std::string& reset_time, time_t* out_window_start_utc) {
+static bool compute_window_start_utc(const std::string& window_reset, time_t* out_window_start_utc) {
     if (!out_window_start_utc) return false;
     *out_window_start_utc = 0;
-    if (reset_time.empty() || reset_time == "N/A") return false;
+    if (window_reset.empty() || window_reset == "N/A") return false;
 
     time_t reset_utc = 0;
-    if (!parse_iso8601_utc_to_time_t(reset_time, &reset_utc)) {
+    if (!parse_iso8601_utc_to_time_t(window_reset, &reset_utc)) {
         return false;
     }
     const time_t window_start = reset_utc - (time_t)kQuotaWindowSeconds;
@@ -640,7 +669,7 @@ static gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
     std::string err;
     bool have = false;
     bool have_good = false;
-    std::string reset_time;
+    std::string window_reset;
     time_t last_window_reset_ts = 0;
     int time_line_px = 0;
     {
@@ -648,9 +677,9 @@ static gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
         have_good = state->have_last_good;
         have = have_good || state->have_quota;
         const QuotaData q = have_good ? state->last_good_quota : state->current_quota;
-        pct = clamp_pct(q.percentage);
+        pct = clamp_pct(q.window_percentage);
         err = state->last_error;
-        reset_time = q.reset_time;
+        window_reset = q.window_reset;
         last_window_reset_ts = state->last_window_reset_ts;
         time_line_px = state->time_line_px;
     }
@@ -809,16 +838,16 @@ static gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
     }
 
     // 5h window remaining time line (bottom edge), independent from usage.
-    // Uses server-provided reset_time when available; falls back to:
+    // Uses server-provided window_reset when available; falls back to:
     //   - local reset detection timestamp (best effort), then
     //   - an epoch-aligned 5h window (always available).
     {
         const int px = clamp_time_line_px(time_line_px);
         if (px > 0) {
             int64_t remaining_s = -1;
-            if (!reset_time.empty() && reset_time != "N/A") {
+            if (!window_reset.empty() && window_reset != "N/A") {
                 time_t reset_utc = 0;
-                if (parse_iso8601_utc_to_time_t(reset_time, &reset_utc)) {
+                if (parse_iso8601_utc_to_time_t(window_reset, &reset_utc)) {
                     int64_t until_reset = (int64_t)difftime(reset_utc, time(nullptr));
                     if (until_reset < 0) until_reset = 0;
                     if (until_reset > kQuotaWindowSeconds) until_reset = kQuotaWindowSeconds;
@@ -848,7 +877,7 @@ static gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data) {
 
             if (remaining_s >= 0) {
                 // If the remaining time is *very* close to the full 5h window, the most
-                // likely case is that we don't have a server reset_time yet. In that case
+                // likely case is that we don't have a server window_reset yet. In that case
                 // don't draw the line (prevents drawing a full-width red bar all the time).
                 if (remaining_s > (int64_t)kQuotaWindowSeconds - 5) {
                     // Leave it hidden until we have a meaningful countdown.
@@ -948,7 +977,7 @@ static gboolean on_fetch_complete(gpointer user_data) {
 
             // Detect 5h window boundary and clear delta history when it changes.
             time_t window_start_utc = 0;
-            const bool have_window = compute_window_start_utc(data->quota_data.reset_time, &window_start_utc);
+            const bool have_window = compute_window_start_utc(data->quota_data.window_reset, &window_start_utc);
             const int64_t tol_s = 60;
             if (have_window) {
                 if (state->last_window_start_utc != 0 && std::llabs((long long)window_start_utc - (long long)state->last_window_start_utc) > tol_s) {
@@ -958,8 +987,8 @@ static gboolean on_fetch_complete(gpointer user_data) {
                 state->last_window_start_utc = window_start_utc;
             }
 
-            const double new_pct = data->quota_data.percentage;
-            const double prev_pct = state->have_last_good ? state->last_good_quota.percentage : new_pct;
+            const double new_pct = data->quota_data.window_percentage;
+            const double prev_pct = state->have_last_good ? state->last_good_quota.window_percentage : new_pct;
             state->prev_good_pct = prev_pct;
             state->last_delta_pp = new_pct - prev_pct;
 
@@ -1046,18 +1075,24 @@ static void* fetch_quota_thread(void* arg) {
 
     try {
         json j = json::parse(data->result.body);
-        if (!j.contains("used") || j["used"].is_null()) {
-            data->error_message = "Parse error: missing 'used'";
+        if (!j.contains("windowUsed") || j["windowUsed"].is_null()) {
+            data->error_message = "Parse error: missing 'windowUsed'";
             g_idle_add(on_fetch_complete, data);
             return nullptr;
         }
 
-        double used = j["used"].get<double>();
-        std::string reset = (j.contains("reset") && !j["reset"].is_null()) ? j["reset"].get<std::string>() : "";
+        const double window_used = j["windowUsed"].get<double>();
+        const std::string window_reset = (j.contains("windowReset") && !j["windowReset"].is_null()) ? j["windowReset"].get<std::string>() : "";
+        const double weekly_used = (j.contains("weeklyUsed") && !j["weeklyUsed"].is_null()) ? j["weeklyUsed"].get<double>() : 0.0;
+        const std::string weekly_reset = (j.contains("weeklyReset") && !j["weeklyReset"].is_null()) ? j["weeklyReset"].get<std::string>() : "";
+        const int window_resets_remaining = (j.contains("windowResetsRemaining") && !j["windowResetsRemaining"].is_null()) ? j["windowResetsRemaining"].get<int>() : 0;
 
-        data->quota_data.used = used;
-        data->quota_data.percentage = used * 100.0;
-        data->quota_data.reset_time = reset.empty() ? "N/A" : reset;
+        data->quota_data.window_used = window_used;
+        data->quota_data.window_percentage = window_used * 100.0;
+        data->quota_data.window_reset = window_reset.empty() ? "N/A" : window_reset;
+        data->quota_data.weekly_used = weekly_used;
+        data->quota_data.weekly_reset = weekly_reset.empty() ? "N/A" : weekly_reset;
+        data->quota_data.window_resets_remaining = window_resets_remaining;
         data->quota_data.timestamp = time(nullptr);
         data->success = true;
     } catch (const std::exception& e) {

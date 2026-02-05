@@ -30,10 +30,19 @@ static constexpr int kQuotaWindowSeconds = 5 * 60 * 60;
 
 // Structure to hold quota data
 struct QuotaData {
-    double used;
-    double percentage;
-    std::string reset_time;
-    time_t timestamp;
+    // 5-hour window
+    double window_used = 0.0;          // 0-1
+    double window_percentage = 0.0;    // 0-100
+    std::string window_reset;          // ISO UTC or "N/A"
+
+    // Weekly budget
+    double weekly_used = 0.0;          // 0-1
+    std::string weekly_reset;          // ISO UTC or "N/A"
+
+    // Manual window resets remaining this week (0-2)
+    int window_resets_remaining = 0;
+
+    time_t timestamp = 0;
 };
 
 // Structure to hold HTTP request results

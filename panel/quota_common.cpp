@@ -294,7 +294,7 @@ std::string get_timestamp_string() {
 // ============================================================================
 
 QuotaData read_last_log_entry(const std::string& log_file) {
-    QuotaData last_data = {0.0, 0.0, "", 0};
+    QuotaData last_data;
 
     std::ifstream file(log_file);
     if (!file.is_open()) {
@@ -332,9 +332,9 @@ QuotaData read_last_log_entry(const std::string& log_file) {
     std::getline(ss, reset_str, ',');
 
     try {
-        last_data.used = std::stod(used_str);
-        last_data.percentage = std::stod(percentage_str);
-        last_data.reset_time = reset_str;
+        last_data.window_used = std::stod(used_str);
+        last_data.window_percentage = std::stod(percentage_str);
+        last_data.window_reset = reset_str;
 
         // Parse timestamp to time_t
         struct tm tm_info = {};
@@ -356,17 +356,17 @@ std::string detect_event(const QuotaData& current, const QuotaData& previous) {
     double hours_diff = difftime(current.timestamp, previous.timestamp) / 3600.0;
 
     // If usage decreased significantly (more than 20%), it's likely a reset
-    if (current.percentage < previous.percentage - 20.0) {
+    if (current.window_percentage < previous.window_percentage - 20.0) {
         return "QUOTA_RESET";
     }
 
     // If more than 5 hours passed and usage is low, might be a reset
-    if (hours_diff >= 5.0 && current.percentage < 10.0) {
+    if (hours_diff >= 5.0 && current.window_percentage < 10.0) {
         return "POSSIBLE_RESET";
     }
 
     // If usage increased significantly
-    if (current.percentage > previous.percentage + 10.0) {
+    if (current.window_percentage > previous.window_percentage + 10.0) {
         return "HIGH_USAGE";
     }
 
@@ -392,11 +392,11 @@ void write_log_entry(const std::string& log_file, const QuotaData& data, const s
         file << "Timestamp,Used,Percentage,Reset,Event" << std::endl;
     }
 
-    // Write data
-    file << get_timestamp_string() << ","
-         << std::fixed << std::setprecision(4) << data.used << ","
-         << std::fixed << std::setprecision(2) << data.percentage << ","
-         << data.reset_time << ","
+     // Write data
+     file << get_timestamp_string() << ","
+         << std::fixed << std::setprecision(4) << data.window_used << ","
+         << std::fixed << std::setprecision(2) << data.window_percentage << ","
+         << data.window_reset << ","
          << event << std::endl;
 
     file.close();
