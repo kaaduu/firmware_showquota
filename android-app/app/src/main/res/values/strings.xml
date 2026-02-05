@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Firmware Quota</string>
+    <string name="widget_name">Firmware Quota Widget</string>
+    <string name="loading">...</string>
+    <string name="error">ERR</string>
+    <string name="no_data">--</string>
+</resources>

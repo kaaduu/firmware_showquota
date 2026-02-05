@@ -7,4 +7,16 @@ panel/firmware-quota-applet
 .firmware_quota_gui.conf
 firmware-icon.png
 
+# Workspace / tooling
+.sisyphus/
+panel/.sisyphus/
+panel/query_api_answer.json
+
 dist/
+
+# Android app
+android-app/.gradle/
+android-app/**/build/
+android-app/local.properties
+android-app/.idea/
+android-app/**/*.iml

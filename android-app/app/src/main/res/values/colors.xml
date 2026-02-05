@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="green_fill">#33C74D</color>
+    <color name="yellow_fill">#F2BF33</color>
+    <color name="red_fill">#E84761</color>
+    <color name="background_dark">#8C000000</color>
+    <color name="border_normal">#99FFFFFF</color>
+    <color name="border_stale">#D9FAB826</color>
+    <color name="window_timer_white">#F2FFFFFF</color>
+    <color name="window_timer_cyan">#F200BFFF</color>
+    <color name="delta_increase">#E840A6FA</color>
+    <color name="delta_decrease">#E6FA8C26</color>
+</resources>

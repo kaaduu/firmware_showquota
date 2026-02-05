@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/white"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:id="@+id/title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Firmware Quota"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:paddingBottom="12dp" />
+
+        <com.firmware.quota.QuotaProgressBar
+            android:id="@+id/progress_bar"
+            android:layout_width="match_parent"
+            android:layout_height="80dp" />
+
+        <TextView
+            android:id="@+id/subtitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Tap menu to set API key"
+            android:textSize="14sp"
+            android:gravity="center"
+            android:textColor="@android:color/darker_gray"
+            android:paddingTop="10dp"
+            android:paddingBottom="14dp" />
+
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Status: INIT"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:textColor="#111111"
+            android:paddingBottom="10dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Window"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#111111"
+            android:paddingBottom="6dp" />
+
+        <TextView
+            android:id="@+id/window_usage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Usage: --"
+            android:textSize="14sp"
+            android:textColor="#111111" />
+
+        <TextView
+            android:id="@+id/window_delta"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Delta: --"
+            android:textSize="14sp"
+            android:textColor="#111111" />
+
+        <TextView
+            android:id="@+id/window_reset_in"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Reset: --"
+            android:textSize="14sp"
+            android:textColor="#111111" />
+
+        <TextView
+            android:id="@+id/window_resets_remaining"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Manual resets: --"
+            android:textSize="14sp"
+            android:textColor="#111111"
+            android:paddingBottom="10dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Weekly"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#111111"
+            android:paddingBottom="6dp" />
+
+        <TextView
+            android:id="@+id/weekly_usage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Weekly usage: --"
+            android:textSize="14sp"
+            android:textColor="#111111" />
+
+        <TextView
+            android:id="@+id/weekly_reset_in"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Weekly reset: --"
+            android:textSize="14sp"
+            android:textColor="#111111"
+            android:paddingBottom="10dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="System"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#111111"
+            android:paddingBottom="6dp" />
+
+        <TextView
+            android:id="@+id/last_ok"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Last OK: --"
+            android:textSize="14sp"
+            android:textColor="#111111" />
+
+        <TextView
+            android:id="@+id/next_refresh"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Next refresh: --"
+            android:textSize="14sp"
+            android:textColor="#111111"
+            android:paddingBottom="10dp" />
+
+        <Button
+            android:id="@+id/toggle_diagnostics"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="More details"
+            android:layout_gravity="center_horizontal" />
+
+        <LinearLayout
+            android:id="@+id/diagnostics_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone"
+            android:paddingTop="8dp">
+
+            <TextView
+                android:id="@+id/diagnostics"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Diagnostics: --"
+                android:textSize="13sp"
+                android:textColor="#444444" />
+        </LinearLayout>
+
+    </LinearLayout>
+</ScrollView>
