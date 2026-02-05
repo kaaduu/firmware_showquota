@@ -4,6 +4,13 @@ Quota viewer for the Firmware API with both GUI and terminal modes. Shows curren
 
 API reference (quota endpoint): https://docs.firmware.ai/api-reference/quota
 
+This project expects the quota response fields:
+
+- `windowUsed` (0-1)
+- `windowReset` (ISO UTC string or null)
+
+(The MATE panel applet also uses `weeklyUsed`, `weeklyReset`, and `windowResetsRemaining`.)
+
 ## Screenshots
 
 | Light Mode | Dark Mode | Dark Mode (No Titlebar) |
@@ -291,8 +298,8 @@ If `wmctrl` is installed, the xterm will also be set to "always on top" (best-ef
 
 ## What the output means
 
-- `Usage` bar: quota usage percentage reported by the API.
-- `Reset` bar: time remaining until the next reset.
+- `Usage` bar: 5-hour window usage (`windowUsed`) reported by the API.
+- `Reset` bar: time remaining until the next reset (`windowReset`).
   - The quota window is treated as a fixed 5 hours.
   - The bar drains toward the reset time.
   - Colors shift as reset approaches (green -> yellow -> red).

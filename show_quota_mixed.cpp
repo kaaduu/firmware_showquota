@@ -1129,15 +1129,15 @@ int fetch_and_display_quota(const std::string& api_key, const std::string& token
         return 1;
     }
     
-    // Extract used and reset fields
-    if (!j.contains("used") || j["used"].is_null()) {
+    // Extract window usage and reset fields
+    if (!j.contains("windowUsed") || j["windowUsed"].is_null()) {
         std::cerr << "Failed to parse response. Raw response:" << std::endl;
         std::cerr << (truncate_error_body ? truncate_for_display(result.body, 300) : result.body) << std::endl;
         return 1;
     }
     
-    double used = j["used"];
-    std::string reset = j.contains("reset") && !j["reset"].is_null() ? j["reset"].get<std::string>() : "";
+    double used = j["windowUsed"].get<double>();
+    std::string reset = (j.contains("windowReset") && !j["windowReset"].is_null()) ? j["windowReset"].get<std::string>() : "";
     
     // Calculate percentage
     double percentage = used * 100.0;
@@ -2719,15 +2719,15 @@ static void* fetch_quota_thread(void* arg) {
     try {
         json j = json::parse(data->result.body);
 
-        if (!j.contains("used") || j["used"].is_null()) {
+        if (!j.contains("windowUsed") || j["windowUsed"].is_null()) {
             data->success = false;
-            data->error_message = "Failed to parse response (missing 'used').\n" + truncate_for_display(data->result.body, 300);
+            data->error_message = "Failed to parse response (missing 'windowUsed').\n" + truncate_for_display(data->result.body, 300);
             g_idle_add(on_fetch_complete, data);
             return nullptr;
         }
 
-        double used = j["used"].get<double>();
-        std::string reset = (j.contains("reset") && !j["reset"].is_null()) ? j["reset"].get<std::string>() : "";
+        double used = j["windowUsed"].get<double>();
+        std::string reset = (j.contains("windowReset") && !j["windowReset"].is_null()) ? j["windowReset"].get<std::string>() : "";
 
         data->quota_data.used = used;
         data->quota_data.percentage = used * 100.0;

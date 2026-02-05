@@ -444,15 +444,15 @@ static int fetch_and_display_quota(const std::string& api_key, const std::string
         return 1;
     }
     
-    // Extract used and reset fields
-    if (!j.contains("used") || j["used"].is_null()) {
+    // Extract window usage and reset fields
+    if (!j.contains("windowUsed") || j["windowUsed"].is_null()) {
         std::cerr << "Failed to parse response. Raw response:" << std::endl;
         std::cerr << (truncate_error_body ? truncate_for_display(result.body, 300) : result.body) << std::endl;
         return 1;
     }
     
-    double used = j["used"];
-    std::string reset = j.contains("reset") && !j["reset"].is_null() ? j["reset"].get<std::string>() : "";
+    double used = j["windowUsed"].get<double>();
+    std::string reset = (j.contains("windowReset") && !j["windowReset"].is_null()) ? j["windowReset"].get<std::string>() : "";
     
     // Calculate percentage
     double percentage = used * 100.0;

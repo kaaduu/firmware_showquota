@@ -1630,15 +1630,15 @@ static void* fetch_quota_thread(void* arg) {
     try {
         json j = json::parse(data->result.body);
 
-        if (!j.contains("used") || j["used"].is_null()) {
+        if (!j.contains("windowUsed") || j["windowUsed"].is_null()) {
             data->success = false;
-            data->error_message = "Failed to parse response (missing 'used').\n" + truncate_for_display(data->result.body, 300);
+            data->error_message = "Failed to parse response (missing 'windowUsed').\n" + truncate_for_display(data->result.body, 300);
             g_idle_add(on_fetch_complete, data);
             return nullptr;
         }
 
-        double used = j["used"].get<double>();
-        std::string reset = (j.contains("reset") && !j["reset"].is_null()) ? j["reset"].get<std::string>() : "";
+        double used = j["windowUsed"].get<double>();
+        std::string reset = (j.contains("windowReset") && !j["windowReset"].is_null()) ? j["windowReset"].get<std::string>() : "";
 
         data->quota_data.used = used;
         data->quota_data.percentage = used * 100.0;
