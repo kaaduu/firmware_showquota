@@ -1,5 +1,7 @@
 #include "quota_common.h"
 
+RequestResult make_request_to_url(const std::string& url, const std::string& auth_header, bool post);
+
 // ============================================================================
 // CURL Utilities Implementation
 // ============================================================================
@@ -11,6 +13,10 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* use
 }
 
 RequestResult make_request(const std::string& auth_header) {
+    return make_request_to_url("https://app.firmware.ai/api/v1/quota", auth_header, false);
+}
+
+RequestResult make_request_to_url(const std::string& url, const std::string& auth_header, bool post) {
     RequestResult out;
 
     CURL* curl = curl_easy_init();
@@ -24,11 +30,12 @@ RequestResult make_request(const std::string& auth_header) {
 
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, auth_header.c_str());
+    headers = curl_slist_append(headers, "Accept: application/json");
 
     char errbuf[CURL_ERROR_SIZE];
     errbuf[0] = '\0';
 
-    curl_easy_setopt(curl, CURLOPT_URL, "https://app.firmware.ai/api/v1/quota");
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
@@ -36,6 +43,13 @@ RequestResult make_request(const std::string& auth_header) {
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
+
+    if (post) {
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        // Explicit empty body.
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "");
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, 0L);
+    }
 
     out.curl_code = curl_easy_perform(curl);
     out.body = std::move(response);

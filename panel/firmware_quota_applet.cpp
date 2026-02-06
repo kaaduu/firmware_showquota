@@ -40,6 +40,8 @@
 static constexpr const char* kFactoryId = "FirmwareQuotaAppletFactory";
 static constexpr const char* kAppletId = "FirmwareQuotaApplet";
 
+static constexpr const char* kQuotaResetWindowUrl = "https://app.firmware.ai/api/v1/quota/reset-window";
+
 static constexpr int kAppletDefaultWidthPx = 120;
 static constexpr int kAppletMinWidthPx = 60;
 // Fallback hard cap; real cap is computed from the active monitor size.
@@ -1186,6 +1188,274 @@ static void on_action_refresh_now(GtkAction*, gpointer user_data) {
     start_fetch(state);
 }
 
+struct ResetThreadData {
+    AppletState* state;
+    RequestResult result;
+    bool success;
+    int window_resets_remaining;
+    std::optional<AuthMethod> used_method;
+    std::string error_message;
+};
+
+static std::string parse_reset_window_error_message(const std::string& body) {
+    if (body.empty()) return "";
+    try {
+        json j = json::parse(body);
+        if (j.contains("message") && !j["message"].is_null()) {
+            return j["message"].get<std::string>();
+        }
+        if (j.contains("error") && !j["error"].is_null()) {
+            if (j["error"].is_string()) {
+                return j["error"].get<std::string>();
+            }
+        }
+    } catch (...) {
+        // ignore
+    }
+    return "";
+}
+
+static RequestResult make_reset_window_request(const std::string& auth_header) {
+    return make_request_to_url(kQuotaResetWindowUrl, auth_header, true);
+}
+
+static RequestResult try_auth_methods_reset_window(const std::string& api_key,
+                                                  const std::string& token,
+                                                  std::optional<AuthMethod>& preferred_method,
+                                                  std::optional<AuthMethod>* used_method_out) {
+    auto attempt = [&](AuthMethod m) -> RequestResult {
+        return make_reset_window_request(build_auth_header(m, api_key, token));
+    };
+
+    const AuthMethod all_methods[] = {
+        AuthMethod::BearerFullKey,
+        AuthMethod::BearerToken,
+        AuthMethod::XApiKey,
+        AuthMethod::AuthorizationRaw,
+    };
+
+    auto check_success = [&](const RequestResult& r) {
+        if (r.curl_code != CURLE_OK) {
+            return false;
+        }
+        if (!is_http_success(r.http_code)) {
+            return false;
+        }
+        if (is_auth_failure(r)) {
+            return false;
+        }
+        return true;
+    };
+
+    RequestResult last;
+
+    if (preferred_method.has_value()) {
+        last = attempt(*preferred_method);
+        if (check_success(last)) {
+            if (used_method_out) {
+                *used_method_out = *preferred_method;
+            }
+            return last;
+        }
+
+        if (last.curl_code != CURLE_OK || (!is_auth_failure(last) && !is_http_success(last.http_code))) {
+            return last;
+        }
+    }
+
+    for (AuthMethod m : all_methods) {
+        if (preferred_method.has_value() && m == *preferred_method) {
+            continue;
+        }
+
+        last = attempt(m);
+        if (check_success(last)) {
+            preferred_method = m;
+            if (used_method_out) {
+                *used_method_out = m;
+            }
+            return last;
+        }
+
+        if (last.curl_code != CURLE_OK || (!is_auth_failure(last) && !is_http_success(last.http_code))) {
+            break;
+        }
+    }
+
+    return last;
+}
+
+static gboolean on_reset_complete(gpointer user_data) {
+    ResetThreadData* data = (ResetThreadData*)user_data;
+    AppletState* state = data->state;
+
+    {
+        std::lock_guard<std::mutex> lock(state->mu);
+        state->fetching = false;
+        if (data->success) {
+            // Update remaining resets; then fetch to refresh window usage/reset timestamps.
+            if (data->window_resets_remaining >= 0) {
+                state->current_quota.window_resets_remaining = data->window_resets_remaining;
+                if (state->have_last_good) {
+                    state->last_good_quota.window_resets_remaining = data->window_resets_remaining;
+                }
+            }
+            state->last_error.clear();
+            if (data->used_method.has_value()) {
+                state->preferred_auth_method = data->used_method;
+            }
+        } else {
+            state->last_error = data->error_message;
+            state->last_failure_ts = time(nullptr);
+            state->consecutive_failures += 1;
+            state->last_http_code = data->result.http_code;
+            state->last_curl_code = data->result.curl_code;
+            state->last_curl_error = data->result.curl_error;
+        }
+    }
+
+    if (!state->destroy_requested.load(std::memory_order_relaxed) && state->drawing) {
+        set_tooltip(state);
+        gtk_widget_queue_draw(state->drawing);
+    }
+
+    // If reset succeeded, refresh quota immediately.
+    if (data->success) {
+        start_fetch(state);
+    }
+
+    delete data;
+    state_unref(state);
+    return G_SOURCE_REMOVE;
+}
+
+static void* reset_window_thread(void* arg) {
+    ResetThreadData* data = (ResetThreadData*)arg;
+    AppletState* state = data->state;
+    data->success = false;
+    data->window_resets_remaining = -1;
+
+    if (state->api_key.empty()) {
+        data->error_message = "Missing FIRMWARE_API_KEY";
+        g_idle_add(on_reset_complete, data);
+        return nullptr;
+    }
+
+    data->result = try_auth_methods_reset_window(
+        state->api_key,
+        state->token,
+        state->preferred_auth_method,
+        &data->used_method
+    );
+
+    if (data->result.curl_code != CURLE_OK) {
+        data->error_message = std::string("Request failed: ") + curl_easy_strerror(data->result.curl_code);
+        if (!data->result.curl_error.empty()) {
+            data->error_message += " (" + data->result.curl_error + ")";
+        }
+        g_idle_add(on_reset_complete, data);
+        return nullptr;
+    }
+
+    if (!is_http_success(data->result.http_code)) {
+        std::string msg = parse_reset_window_error_message(data->result.body);
+        if (msg.empty()) {
+            msg = "HTTP error: " + std::to_string(data->result.http_code);
+            if (!data->result.body.empty()) {
+                msg += ": " + truncate_for_display(data->result.body, 200);
+            }
+        }
+        data->error_message = msg;
+        g_idle_add(on_reset_complete, data);
+        return nullptr;
+    }
+
+    try {
+        json j = json::parse(data->result.body);
+        if (j.contains("success") && !j["success"].is_null() && j["success"].get<bool>()) {
+            if (j.contains("windowResetsRemaining") && !j["windowResetsRemaining"].is_null()) {
+                data->window_resets_remaining = j["windowResetsRemaining"].get<int>();
+            }
+            data->success = true;
+        } else {
+            std::string msg;
+            if (j.contains("message") && !j["message"].is_null()) {
+                msg = j["message"].get<std::string>();
+            }
+            if (msg.empty() && j.contains("error") && !j["error"].is_null() && j["error"].is_string()) {
+                msg = j["error"].get<std::string>();
+            }
+            data->error_message = msg.empty() ? "Reset failed" : msg;
+        }
+    } catch (const std::exception& e) {
+        data->error_message = std::string("Parse error: ") + e.what();
+    }
+
+    g_idle_add(on_reset_complete, data);
+    return nullptr;
+}
+
+static void start_reset_window(AppletState* state) {
+    if (!state) return;
+    if (state->destroy_requested.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state->mu);
+        if (state->fetching) {
+            return;
+        }
+        state->fetching = true;
+        state->last_error.clear();
+    }
+
+    ResetThreadData* data = new ResetThreadData();
+    data->state = state;
+
+    state_ref(state);
+
+    pthread_t thread;
+    if (pthread_create(&thread, nullptr, reset_window_thread, data) == 0) {
+        pthread_detach(thread);
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state->mu);
+        state->fetching = false;
+        state->last_error = "Failed to start reset thread";
+    }
+    delete data;
+    state_unref(state);
+}
+
+static void on_action_reset_window(GtkAction*, gpointer user_data) {
+    AppletState* state = (AppletState*)user_data;
+    if (!state) return;
+    if (state->destroy_requested.load(std::memory_order_relaxed)) return;
+
+    // Confirm.
+    GtkWidget* dialog = gtk_message_dialog_new(
+        nullptr,
+        (GtkDialogFlags)(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
+        GTK_MESSAGE_WARNING,
+        GTK_BUTTONS_NONE,
+        "%s",
+        "Reset your 5-hour spending window now?\n\nThis uses 1 of 2 weekly resets and only helps if weekly budget remains."
+    );
+    gtk_dialog_add_buttons(GTK_DIALOG(dialog), "Cancel", GTK_RESPONSE_CANCEL, "Reset", GTK_RESPONSE_OK, nullptr);
+    gtk_widget_show_all(dialog);
+
+    const int resp = gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+    if (resp != GTK_RESPONSE_OK) {
+        return;
+    }
+
+    start_reset_window(state);
+}
+
 static void on_action_rate(GtkAction* action, GtkRadioAction* current, gpointer user_data) {
     (void)action;
     AppletState* state = (AppletState*)user_data;
@@ -1425,6 +1695,7 @@ static void setup_panel_menu(AppletState* state) {
     // Refresh now
     GtkActionEntry refresh_entries[] = {
         {"FirmwareQuotaRefreshNow", nullptr, "Refresh Now", nullptr, "Refresh immediately", G_CALLBACK(on_action_refresh_now)},
+        {"FirmwareQuotaResetWindow", nullptr, "Reset Window...", nullptr, "Reset 5-hour window", G_CALLBACK(on_action_reset_window)},
         {"FirmwareQuotaWidthDec", nullptr, "-10px", nullptr, "Decrease width", G_CALLBACK(on_action_width_decrease)},
         {"FirmwareQuotaWidthInc", nullptr, "+10px", nullptr, "Increase width", G_CALLBACK(on_action_width_increase)},
         {"FirmwareQuotaWidthDec100", nullptr, "-100px", nullptr, "Decrease width by 100px", G_CALLBACK(on_action_width_decrease_100)},
@@ -1434,7 +1705,7 @@ static void setup_panel_menu(AppletState* state) {
         {"FirmwareQuotaApiReload", nullptr, "Reload", nullptr, "Reload API key", G_CALLBACK(on_action_api_key_reload)},
         {"FirmwareQuotaApiClear", nullptr, "Clear Stored Key", nullptr, "Remove stored key", G_CALLBACK(on_action_api_key_clear)},
     };
-    gtk_action_group_add_actions(group, refresh_entries, 9, state);
+    gtk_action_group_add_actions(group, refresh_entries, 10, state);
 
     // Refresh rate radio group
     GtkRadioActionEntry rate_entries[] = {
@@ -1479,6 +1750,7 @@ static void setup_panel_menu(AppletState* state) {
     // Provide ONLY the fragment that should be inserted into the AppletItems placeholder.
     const char* xml =
         "<menuitem action='FirmwareQuotaRefreshNow'/>"
+        "<menuitem action='FirmwareQuotaResetWindow'/>"
         "<separator/>"
         "<menu action='FirmwareQuotaApiMenu'>"
         "  <menuitem action='FirmwareQuotaApiSet'/>"

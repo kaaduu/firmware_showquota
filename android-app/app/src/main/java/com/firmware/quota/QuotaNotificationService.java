@@ -6,6 +6,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
+import android.view.View;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -82,7 +83,7 @@ public class QuotaNotificationService extends Service {
     
     private void updateNotification() {
         if (!prefs.hasApiKey()) {
-            updateNotificationView("--", android.graphics.Color.argb(140, 0, 0, 0), false);
+            updateNotificationView("--", 0, false);
             return;
         }
         
@@ -90,8 +91,7 @@ public class QuotaNotificationService extends Service {
         apiClient.fetchQuota(apiKey, new QuotaApiClient.QuotaCallback() {
             @Override
             public void onSuccess(QuotaData data) {
-                int color = getColorForPercentage(data.percentage);
-                updateNotificationView(Math.round(data.percentage) + "%", color, false);
+                updateNotificationView(Math.round(data.percentage) + "%", (int) Math.round(data.percentage), false);
                 prefs.saveLastQuotaData(data.percentage, data.resetTime);
             }
             
@@ -99,26 +99,27 @@ public class QuotaNotificationService extends Service {
             public void onError(String error) {
                 double lastPct = prefs.getLastPercentage();
                 if (lastPct > 0) {
-                    int color = getColorForPercentage(lastPct);
-                    updateNotificationView(Math.round(lastPct) + "%*", color, true);
+                    updateNotificationView(Math.round(lastPct) + "%*", (int) Math.round(lastPct), true);
                 } else {
-                    updateNotificationView("ERR", android.graphics.Color.argb(140, 232, 71, 97), true);
+                    updateNotificationView("ERR", 0, true);
                 }
             }
         });
     }
     
-    private void updateNotificationView(String text, int color, boolean isStale) {
-        Notification notification = buildNotification(text, color, isStale);
+    private void updateNotificationView(String text, int percentage, boolean isStale) {
+        Notification notification = buildNotification(text, percentage, isStale);
         NotificationManager manager = getSystemService(NotificationManager.class);
         manager.notify(NOTIFICATION_ID, notification);
     }
     
-    private Notification buildNotification(String text, int color, boolean isStale) {
+    private Notification buildNotification(String text, int percentage, boolean isStale) {
         // Create custom notification layout
         RemoteViews notificationLayout = new RemoteViews(getPackageName(), R.layout.notification_quota);
         notificationLayout.setTextViewText(R.id.notification_text, text);
-        notificationLayout.setInt(R.id.notification_container, "setBackgroundColor", color);
+
+        int clamped = Math.max(0, Math.min(100, percentage));
+        setQuotaProgress(notificationLayout, clamped);
         
         // Intent to open main activity when notification clicked
         Intent intent = new Intent(this, MainActivity.class);
@@ -138,14 +139,29 @@ public class QuotaNotificationService extends Service {
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
     }
-    
-    private int getColorForPercentage(double percentage) {
+
+    private void setQuotaProgress(RemoteViews views, int percentage) {
+        int activeId;
         if (percentage < 50) {
-            return android.graphics.Color.argb(242, 51, 199, 77);
+            activeId = R.id.notification_progress_green;
         } else if (percentage < 80) {
-            return android.graphics.Color.argb(242, 242, 191, 51);
+            activeId = R.id.notification_progress_yellow;
         } else {
-            return android.graphics.Color.argb(242, 232, 71, 97);
+            activeId = R.id.notification_progress_red;
+        }
+
+        setProgressBarState(views, R.id.notification_progress_green, activeId, percentage);
+        setProgressBarState(views, R.id.notification_progress_yellow, activeId, percentage);
+        setProgressBarState(views, R.id.notification_progress_red, activeId, percentage);
+    }
+
+    private void setProgressBarState(RemoteViews views, int barId, int activeId, int percentage) {
+        if (barId == activeId && percentage > 0) {
+            views.setViewVisibility(barId, View.VISIBLE);
+            views.setProgressBar(barId, 100, percentage, false);
+        } else {
+            views.setViewVisibility(barId, View.GONE);
+            views.setProgressBar(barId, 100, 0, false);
         }
     }
 }

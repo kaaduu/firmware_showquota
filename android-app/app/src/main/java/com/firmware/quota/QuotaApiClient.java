@@ -17,6 +17,7 @@ import java.util.concurrent.Executors;
 public class QuotaApiClient {
     private static final String TAG = "QuotaApiClient";
     private static final String API_URL = "https://app.firmware.ai/api/v1/quota";
+    private static final String RESET_WINDOW_URL = "https://app.firmware.ai/api/v1/quota/reset-window";
     private static final int TIMEOUT_MS = 30000;
     
     private final ExecutorService executor;
@@ -25,6 +26,18 @@ public class QuotaApiClient {
     public interface QuotaCallback {
         void onSuccess(QuotaData data);
         void onError(String error);
+    }
+
+    public interface ResetWindowCallback {
+        void onSuccess(int windowResetsRemaining);
+        void onError(String error);
+    }
+
+    private static final class ResetAttempt {
+        boolean success;
+        boolean authFailure;
+        int windowResetsRemaining;
+        String error;
     }
     
     public QuotaApiClient() {
@@ -46,6 +59,24 @@ public class QuotaApiClient {
                 mainHandler.post(() -> callback.onSuccess(result));
             } catch (Exception e) {
                 Log.e(TAG, "Error fetching quota", e);
+                mainHandler.post(() -> callback.onError(e.getMessage()));
+            }
+        });
+    }
+
+    public void resetWindow(String apiKey, ResetWindowCallback callback) {
+        if (apiKey == null || apiKey.isEmpty()) {
+            callback.onError("Missing API key");
+            return;
+        }
+
+        executor.execute(() -> {
+            try {
+                String token = extractToken(apiKey);
+                int remaining = tryAuthMethodsResetWindow(apiKey, token);
+                mainHandler.post(() -> callback.onSuccess(remaining));
+            } catch (Exception e) {
+                Log.e(TAG, "Error resetting window", e);
                 mainHandler.post(() -> callback.onError(e.getMessage()));
             }
         });
@@ -75,6 +106,27 @@ public class QuotaApiClient {
         
         throw new Exception("All authentication methods failed");
     }
+
+    private int tryAuthMethodsResetWindow(String apiKey, String token) throws Exception {
+        ResetAttempt a;
+
+        a = makeResetWindowAttemptAuth("Bearer " + apiKey);
+        if (a.success) return a.windowResetsRemaining;
+        if (!a.authFailure) throw new Exception(a.error);
+        Log.d(TAG, "Reset: Bearer full key failed, trying token...");
+
+        a = makeResetWindowAttemptAuth("Bearer " + token);
+        if (a.success) return a.windowResetsRemaining;
+        if (!a.authFailure) throw new Exception(a.error);
+        Log.d(TAG, "Reset: Bearer token failed, trying X-API-Key...");
+
+        a = makeResetWindowAttemptXApiKey(apiKey);
+        if (a.success) return a.windowResetsRemaining;
+        if (!a.authFailure) throw new Exception(a.error);
+        Log.d(TAG, "Reset: X-API-Key failed");
+
+        throw new Exception("Unauthorized");
+    }
     
     private QuotaData makeRequest(String authHeader) throws Exception {
         URL url = new URL(API_URL);
@@ -101,6 +153,41 @@ public class QuotaApiClient {
             throw new Exception("HTTP error: " + responseCode);
         }
     }
+
+    private ResetAttempt makeResetWindowAttemptAuth(String authHeader) {
+        ResetAttempt out = new ResetAttempt();
+        try {
+            URL url = new URL(RESET_WINDOW_URL);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Authorization", authHeader);
+            conn.setRequestProperty("Accept", "application/json");
+            conn.setConnectTimeout(TIMEOUT_MS);
+            conn.setReadTimeout(TIMEOUT_MS);
+            conn.setDoOutput(true);
+
+            try {
+                conn.getOutputStream().close();
+            } catch (Exception ignored) {
+            }
+
+            int responseCode = conn.getResponseCode();
+            String body = readResponseBody(conn, responseCode);
+
+            if (responseCode >= 200 && responseCode < 300) {
+                out.success = true;
+                out.windowResetsRemaining = parseResetWindowResponse(body);
+                return out;
+            }
+            out.authFailure = responseCode == HttpURLConnection.HTTP_UNAUTHORIZED || isUnauthorizedBody(body);
+            out.error = buildResetWindowError(responseCode, body);
+            return out;
+        } catch (Exception e) {
+            out.authFailure = false;
+            out.error = e.getMessage() != null ? e.getMessage() : "Reset failed";
+            return out;
+        }
+    }
     
     private QuotaData makeRequestXApiKey(String apiKey) throws Exception {
         URL url = new URL(API_URL);
@@ -125,6 +212,41 @@ public class QuotaApiClient {
             return parseResponse(response.toString());
         } else {
             throw new Exception("HTTP error: " + responseCode);
+        }
+    }
+
+    private ResetAttempt makeResetWindowAttemptXApiKey(String apiKey) {
+        ResetAttempt out = new ResetAttempt();
+        try {
+            URL url = new URL(RESET_WINDOW_URL);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("X-API-Key", apiKey);
+            conn.setRequestProperty("Accept", "application/json");
+            conn.setConnectTimeout(TIMEOUT_MS);
+            conn.setReadTimeout(TIMEOUT_MS);
+            conn.setDoOutput(true);
+
+            try {
+                conn.getOutputStream().close();
+            } catch (Exception ignored) {
+            }
+
+            int responseCode = conn.getResponseCode();
+            String body = readResponseBody(conn, responseCode);
+
+            if (responseCode >= 200 && responseCode < 300) {
+                out.success = true;
+                out.windowResetsRemaining = parseResetWindowResponse(body);
+                return out;
+            }
+            out.authFailure = responseCode == HttpURLConnection.HTTP_UNAUTHORIZED || isUnauthorizedBody(body);
+            out.error = buildResetWindowError(responseCode, body);
+            return out;
+        } catch (Exception e) {
+            out.authFailure = false;
+            out.error = e.getMessage() != null ? e.getMessage() : "Reset failed";
+            return out;
         }
     }
     
@@ -176,6 +298,84 @@ public class QuotaApiClient {
         }
         out.fetchedAtEpochSeconds = System.currentTimeMillis() / 1000;
         return out;
+    }
+
+    private static String readResponseBody(HttpURLConnection conn, int responseCode) {
+        try {
+            java.io.InputStream is = (responseCode >= 200 && responseCode < 300) ? conn.getInputStream() : conn.getErrorStream();
+            if (is == null) {
+                return "";
+            }
+            BufferedReader reader = new BufferedReader(new InputStreamReader(is));
+            StringBuilder response = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                response.append(line);
+            }
+            reader.close();
+            return response.toString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static int parseResetWindowResponse(String json) throws Exception {
+        if (json == null || json.isEmpty()) {
+            throw new Exception("Empty response");
+        }
+        JSONObject obj = new JSONObject(json);
+
+        // Success payload: { success: true, windowResetsRemaining: n }
+        if (obj.has("success") && !obj.isNull("success") && obj.getBoolean("success")) {
+            if (obj.has("windowResetsRemaining") && !obj.isNull("windowResetsRemaining")) {
+                return obj.getInt("windowResetsRemaining");
+            }
+            // If backend ever omits it, treat as unknown but non-fatal.
+            return -1;
+        }
+
+        // Error payload: { success: false, error, message }
+        if (obj.has("message") && !obj.isNull("message")) {
+            throw new Exception(obj.getString("message"));
+        }
+        if (obj.has("error") && !obj.isNull("error")) {
+            throw new Exception(obj.getString("error"));
+        }
+        throw new Exception("Reset failed");
+    }
+
+    private static boolean isUnauthorizedBody(String body) {
+        if (body == null || body.isEmpty()) return false;
+        if (body.contains("Unauthorized") || body.contains("unauthorized")) return true;
+        try {
+            JSONObject obj = new JSONObject(body);
+            if (obj.has("error") && !obj.isNull("error")) {
+                String e = obj.optString("error", "");
+                return "Unauthorized".equalsIgnoreCase(e);
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    private static String buildResetWindowError(int responseCode, String body) {
+        if (body != null && !body.isEmpty()) {
+            try {
+                JSONObject obj = new JSONObject(body);
+                if (obj.has("message") && !obj.isNull("message")) {
+                    return obj.getString("message");
+                }
+                if (obj.has("error") && !obj.isNull("error")) {
+                    return obj.getString("error");
+                }
+                if (obj.has("error") && obj.get("error") instanceof String) {
+                    return obj.getString("error");
+                }
+            } catch (Exception ignored) {
+                // Fall through.
+            }
+        }
+        return "HTTP error: " + responseCode;
     }
     
     private String extractToken(String apiKey) {

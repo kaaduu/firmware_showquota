@@ -1,19 +1,57 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/notification_container"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:orientation="horizontal"
     android:padding="8dp"
     android:background="@android:color/black">
 
-    <TextView
-        android:id="@+id/notification_text"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="--"
-        android:textSize="18sp"
-        android:textStyle="bold"
-        android:textColor="@android:color/white" />
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="32dp">
 
-</LinearLayout>
+        <ProgressBar
+            android:id="@+id/notification_progress_green"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:max="100"
+            android:progress="0"
+            android:indeterminate="false"
+            android:progressDrawable="@drawable/progress_quota_green" />
+
+        <ProgressBar
+            android:id="@+id/notification_progress_yellow"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:max="100"
+            android:progress="0"
+            android:indeterminate="false"
+            android:progressDrawable="@drawable/progress_quota_yellow"
+            android:visibility="gone" />
+
+        <ProgressBar
+            android:id="@+id/notification_progress_red"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:max="100"
+            android:progress="0"
+            android:indeterminate="false"
+            android:progressDrawable="@drawable/progress_quota_red"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/notification_text"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:text="--"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="@android:color/white"
+            android:gravity="center" />
+
+    </FrameLayout>
+
+</FrameLayout>

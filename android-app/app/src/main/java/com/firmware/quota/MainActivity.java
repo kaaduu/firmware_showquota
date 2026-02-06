@@ -58,6 +58,15 @@ public class MainActivity extends AppCompatActivity {
     private static final long REFRESH_INTERVAL_MS = 300000; // 5 minutes
     private static final long UI_TICK_MS = 1000;
     private static final int NOTIFICATION_PERMISSION_CODE = 100;
+
+    private static final int MENU_SET_API_KEY = 1;
+    private static final int MENU_REFRESH_NOW = 2;
+    private static final int MENU_CLEAR_API_KEY = 3;
+    private static final int MENU_SHOW_NOTIFICATION = 4;
+    private static final int MENU_HIDE_NOTIFICATION = 5;
+    private static final int MENU_RESET_WINDOW = 6;
+
+    private boolean resetInFlight = false;
     
     private final List<Double> deltaHistory = new ArrayList<>();
     private double lastPercentage = 0;
@@ -153,36 +162,50 @@ public class MainActivity extends AppCompatActivity {
     
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
-        menu.add(0, 1, 0, "Set API Key");
-        menu.add(0, 2, 0, "Refresh Now");
-        menu.add(0, 3, 0, "Clear API Key");
-        menu.add(0, 4, 0, "Show Notification");
-        menu.add(0, 5, 0, "Hide Notification");
+        menu.add(0, MENU_SET_API_KEY, 0, "Set API Key");
+        menu.add(0, MENU_REFRESH_NOW, 0, "Refresh Now");
+        menu.add(0, MENU_RESET_WINDOW, 0, "Reset Window...");
+        menu.add(0, MENU_CLEAR_API_KEY, 0, "Clear API Key");
+        menu.add(0, MENU_SHOW_NOTIFICATION, 0, "Show Notification");
+        menu.add(0, MENU_HIDE_NOTIFICATION, 0, "Hide Notification");
         return true;
     }
     
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
         switch (item.getItemId()) {
-            case 1:
+            case MENU_SET_API_KEY:
                 showApiKeyDialog();
                 return true;
-            case 2:
+            case MENU_REFRESH_NOW:
                 refreshQuota();
                 return true;
-            case 3:
+            case MENU_RESET_WINDOW:
+                confirmAndResetWindow();
+                return true;
+            case MENU_CLEAR_API_KEY:
                 prefs.saveApiKey(null);
                 progressBar.setHasData(false);
                 Toast.makeText(this, "API key cleared", Toast.LENGTH_SHORT).show();
                 return true;
-            case 4:
+            case MENU_SHOW_NOTIFICATION:
                 startNotificationService();
                 return true;
-            case 5:
+            case MENU_HIDE_NOTIFICATION:
                 stopNotificationService();
                 return true;
         }
         return super.onOptionsItemSelected(item);
+    }
+
+    @Override
+    public boolean onPrepareOptionsMenu(Menu menu) {
+        MenuItem reset = menu.findItem(MENU_RESET_WINDOW);
+        if (reset != null) {
+            boolean enabled = prefs != null && prefs.hasApiKey() && !resetInFlight;
+            reset.setEnabled(enabled);
+        }
+        return super.onPrepareOptionsMenu(menu);
     }
     
     private void startNotificationService() {
@@ -299,6 +322,9 @@ public class MainActivity extends AppCompatActivity {
                 prefs.saveLastQuotaData(data.percentage, data.resetTime);
 
                 renderDetails(data);
+
+                // Update menu state (e.g. enable reset).
+                invalidateOptionsMenu();
             }
             
             @Override
@@ -311,6 +337,71 @@ public class MainActivity extends AppCompatActivity {
 
                 // Keep existing details visible; just tick will update countdowns.
                 Toast.makeText(MainActivity.this, "Error: " + lastError, Toast.LENGTH_SHORT).show();
+
+                invalidateOptionsMenu();
+            }
+        });
+    }
+
+    private void confirmAndResetWindow() {
+        if (prefs == null || !prefs.hasApiKey()) {
+            Toast.makeText(this, "Set API key first", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (resetInFlight) {
+            return;
+        }
+
+        String msg = "Reset your 5-hour spending window now?\n\n" +
+                "- Uses 1 of 2 weekly resets\n" +
+                "- Only helps if weekly budget remains";
+
+        AlertDialog.Builder b = new AlertDialog.Builder(this);
+        b.setTitle("Reset Window");
+        b.setMessage(msg);
+        b.setNegativeButton("Cancel", (d, w) -> d.dismiss());
+        b.setPositiveButton("Reset", (d, w) -> {
+            d.dismiss();
+            doResetWindow();
+        });
+        AlertDialog dialog = b.create();
+        dialog.show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(0xFFE84761);
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(0xFF111111);
+    }
+
+    private void doResetWindow() {
+        if (resetInFlight) return;
+        resetInFlight = true;
+        invalidateOptionsMenu();
+        updateStatus("RESETTING", false);
+
+        String apiKey = prefs.getApiKey();
+        apiClient.resetWindow(apiKey, new QuotaApiClient.ResetWindowCallback() {
+            @Override
+            public void onSuccess(int windowResetsRemaining) {
+                resetInFlight = false;
+                invalidateOptionsMenu();
+
+                if (windowResetsRemaining >= 0) {
+                    Toast.makeText(MainActivity.this,
+                            "Window reset. Resets remaining: " + windowResetsRemaining + "/2",
+                            Toast.LENGTH_LONG).show();
+                } else {
+                    Toast.makeText(MainActivity.this, "Window reset", Toast.LENGTH_LONG).show();
+                }
+
+                // Refresh immediately to reflect new window + remaining resets.
+                refreshQuota();
+            }
+
+            @Override
+            public void onError(String error) {
+                resetInFlight = false;
+                invalidateOptionsMenu();
+                String e = (error == null || error.isEmpty()) ? "Reset failed" : error;
+                Toast.makeText(MainActivity.this, e, Toast.LENGTH_LONG).show();
+                updateStatus("OK", false);
             }
         });
     }

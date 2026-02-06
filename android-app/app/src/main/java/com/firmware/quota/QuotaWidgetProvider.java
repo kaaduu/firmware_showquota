@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.View;
 import android.widget.RemoteViews;
 
 import java.util.concurrent.ExecutorService;
@@ -46,8 +47,7 @@ public class QuotaWidgetProvider extends AppWidgetProvider {
         
         if (!prefs.hasApiKey()) {
             views.setTextViewText(R.id.widget_text, "--");
-            views.setInt(R.id.widget_container, "setBackgroundColor", 
-                    android.graphics.Color.argb(140, 0, 0, 0));
+            setQuotaProgress(views, 0);
             appWidgetManager.updateAppWidget(appWidgetId, views);
             return;
         }
@@ -79,12 +79,10 @@ public class QuotaWidgetProvider extends AppWidgetProvider {
                             if (lastPct > 0) {
                                 views.setTextViewText(R.id.widget_text, 
                                         Math.round(lastPct) + "%*");
-                                int color = getColorForPercentage(lastPct);
-                                views.setInt(R.id.widget_container, "setBackgroundColor", color);
+                                setQuotaProgress(views, (int) Math.round(lastPct));
                             } else {
                                 views.setTextViewText(R.id.widget_text, "ERR");
-                                views.setInt(R.id.widget_container, "setBackgroundColor",
-                                        android.graphics.Color.argb(140, 232, 71, 97));
+                                setQuotaProgress(views, 0);
                             }
                             appWidgetManager.updateAppWidget(appWidgetId, views);
                         });
@@ -104,22 +102,37 @@ public class QuotaWidgetProvider extends AppWidgetProvider {
                                      QuotaPreferences prefs) {
         int percentage = (int) Math.round(data.percentage);
         views.setTextViewText(R.id.widget_text, percentage + "%");
-        
-        int color = getColorForPercentage(data.percentage);
-        views.setInt(R.id.widget_container, "setBackgroundColor", color);
+
+        setQuotaProgress(views, percentage);
         
         prefs.saveLastQuotaData(data.percentage, data.resetTime);
         
         appWidgetManager.updateAppWidget(appWidgetId, views);
     }
-    
-    private int getColorForPercentage(double percentage) {
-        if (percentage < 50) {
-            return android.graphics.Color.argb(242, 51, 199, 77); // Green
-        } else if (percentage < 80) {
-            return android.graphics.Color.argb(242, 242, 191, 51); // Yellow
+
+    private void setQuotaProgress(RemoteViews views, int percentage) {
+        int clamped = Math.max(0, Math.min(100, percentage));
+        int activeId;
+        if (clamped < 50) {
+            activeId = R.id.widget_progress_green;
+        } else if (clamped < 80) {
+            activeId = R.id.widget_progress_yellow;
         } else {
-            return android.graphics.Color.argb(242, 232, 71, 97); // Red
+            activeId = R.id.widget_progress_red;
+        }
+
+        setProgressBarState(views, R.id.widget_progress_green, activeId, clamped);
+        setProgressBarState(views, R.id.widget_progress_yellow, activeId, clamped);
+        setProgressBarState(views, R.id.widget_progress_red, activeId, clamped);
+    }
+
+    private void setProgressBarState(RemoteViews views, int barId, int activeId, int percentage) {
+        if (barId == activeId && percentage > 0) {
+            views.setViewVisibility(barId, View.VISIBLE);
+            views.setProgressBar(barId, 100, percentage, false);
+        } else {
+            views.setViewVisibility(barId, View.GONE);
+            views.setProgressBar(barId, 100, 0, false);
         }
     }
     

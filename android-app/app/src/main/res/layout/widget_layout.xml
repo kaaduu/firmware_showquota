@@ -1,11 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_container"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="horizontal"
     android:background="@android:color/black"
     android:padding="2dp">
+
+    <ProgressBar
+        android:id="@+id/widget_progress_green"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:max="100"
+        android:progress="0"
+        android:indeterminate="false"
+        android:progressDrawable="@drawable/progress_quota_green" />
+
+    <ProgressBar
+        android:id="@+id/widget_progress_yellow"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:max="100"
+        android:progress="0"
+        android:indeterminate="false"
+        android:progressDrawable="@drawable/progress_quota_yellow"
+        android:visibility="gone" />
+
+    <ProgressBar
+        android:id="@+id/widget_progress_red"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:max="100"
+        android:progress="0"
+        android:indeterminate="false"
+        android:progressDrawable="@drawable/progress_quota_red"
+        android:visibility="gone" />
 
     <TextView
         android:id="@+id/widget_text"
@@ -18,4 +49,4 @@
         android:gravity="center"
         android:background="@android:color/transparent" />
 
-</LinearLayout>
+</FrameLayout>

@@ -71,6 +71,9 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* use
 // Make HTTP request with given auth header
 RequestResult make_request(const std::string& auth_header);
 
+// Make HTTP request to a URL with auth header and optional POST.
+RequestResult make_request_to_url(const std::string& url, const std::string& auth_header, bool post);
+
 // Build authentication header based on method
 std::string build_auth_header(AuthMethod method, const std::string& api_key, const std::string& token);
 
